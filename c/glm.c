@@ -51,6 +51,7 @@
 #include "uring.h"
 #endif
 #include "tok.h"
+#include "churn.h"
 #include "tier.h"
 #include "grammar.h"                              /* metodo F: draft grammaticali (#48) */
 #include "schema_gbnf.h"                          /* SCHEMA=: JSON-Schema -> GBNF for method F */
@@ -4369,9 +4370,10 @@ static int spec_decode(Model *m, int *all, int kv, int n_new, int eos, float *lo
     enum { GUARD_PAUSE_TOKENS = 256 };
     uint64_t gd_prop0=m->mtp_prop, gd_acc0=m->mtp_acc; int gd_pause=0;
     while(emitted<n_new && !done && !g_intr){   /* g_intr: stessa uscita del tetto n_new */
+        churn_mask(logit,V,g_stop,g_nstop,(long)m->n_emit);
         int next=pick_tok(logit,V,carry_ban); carry_ban=-1; free(logit); logit=NULL;
         if((eos>=0 && next==eos) || is_stop(next)) break;
-        emit(next,ud); all[kv]=next; emitted++; m->n_emit++;
+        emit(next,ud); all[kv]=next; emitted++; m->n_emit++; churn_feed(next);
         gr_feed(next);                                  /* il walker segue l'output emesso */
         if(emitted>=n_new) break;                       /* l'ultimo token non serve forwardarlo */
         int g = 0, gsrc = 0;                            /* sorgente: 1=grammatica 2=MTP/n-gram */
@@ -4414,7 +4416,7 @@ static int spec_decode(Model *m, int *all, int kv, int n_new, int eos, float *lo
                    accept = (rndu() < g_pbuf[draft[k]]); }
             if(!accept){ if(g_temp>0) carry_ban=draft[k]; break; }
             if((eos>=0 && draft[k]==eos) || is_stop(draft[k])){ done=1; break; }
-            emit(draft[k],ud); all[kv+1+k]=draft[k]; emitted++; m->n_emit++;
+            emit(draft[k],ud); all[kv+1+k]=draft[k]; emitted++; m->n_emit++; churn_feed(draft[k]);
             gr_feed(draft[k]); k++;
         }
         if(gsrc==1) g_gr_acc+=(uint64_t)k;
@@ -4439,7 +4441,7 @@ static void emit_store(int t, void *ud){ EmitStore *e=(EmitStore*)ud; e->dst[e->
 typedef struct { Tok *T; Model *m; double t0; int count; int quiet; } EmitStream;
 static void emit_stream(int t, void *ud){
     EmitStream *e=(EmitStream*)ud; char dec[64];
-    int dn=tok_decode(e->T,&t,1,dec,63); dec[dn]=0; fputs(dec,stdout); fflush(stdout);
+    int dn=tok_decode(e->T,&t,1,dec,63); dec[dn]=0; churn_text(dec); fputs(dec,stdout); fflush(stdout);
     if(!e->quiet && ++e->count%16==0){ double tt=e->m->hits+e->m->miss;
         if(g_cache_route && e->m->route_slots){
             double swap=100.0*e->m->route_swaps/e->m->route_slots;
@@ -6165,6 +6167,8 @@ int main(int argc, char **argv){
     g_mlock  = getenv("MLOCK")?atoi(getenv("MLOCK")):-1;   /* -1 auto (ON macOS), 0 off, 1 force / auto (ON macOS), 0 off, 1 force */
     g_spec = getenv("SPEC")?atoi(getenv("SPEC")):1;
     g_draft = getenv("DRAFT")?atoi(getenv("DRAFT")):-1;
+    churn_env_init();
+    if(churn_active()) g_draft = 0;      /* accepted drafts bypass the pick step: masking cannot see them */
     g_no_fused_pair = getenv("COLI_NO_FUSED_PAIR")?atoi(getenv("COLI_NO_FUSED_PAIR")):0;   /* -1 = auto: 3 se MTP, 0 senza */
     g_looka = getenv("LOOKA")?atoi(getenv("LOOKA")):0;    /* 1 = misura predicibilita' routing */
     g_pilot = getenv("PILOT")?atoi(getenv("PILOT")):0;    /* 1 = prefetch pilotato dal router */
