@@ -40,6 +40,8 @@ if sys.platform == "win32":
         except (AttributeError, OSError): pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from version import __version__ as _version
 
 # Run-in-place (source checkout, "cd c && ./coli ..."): the engine, the
 # support modules (resource_plan.py, doctor.py, openai_server.py) and
@@ -115,7 +117,7 @@ def sprite_lines():
 def banner(sub=""):
     sp=sprite_lines()
     txt=[
-        f"{C.teal}{C.b}colibrì{C.r} {C.dim}v1.0{C.r}",
+        f"{C.teal}{C.b}colibrì{C.r} {C.dim}v{_version}{C.r}",
         f"{C.dim}tiny engine, immense model{C.r}",
         f"{C.gray}GLM-5.2 · 744B MoE · int4 · streaming CPU{C.r}",
         f"{C.dgray}{sub}{C.r}" if sub else "",
@@ -141,12 +143,24 @@ def need_model(model):
         sys.exit(f"{C.yel}engine is not built.{C.r} Run: coli build")
 
 def cuda_binary():
-    if not os.path.exists(GLM) or sys.platform != "linux": return False
-    try:
-        linked=subprocess.run(["ldd",GLM],capture_output=True,text=True,timeout=3)
-        return any("libcudart" in line and "not found" not in line
-                   for line in linked.stdout.splitlines())
-    except (OSError,subprocess.SubprocessError): return False
+    if not os.path.exists(GLM): return False
+    if sys.platform == "linux":
+        try:
+            linked=subprocess.run(["ldd",GLM],capture_output=True,text=True,timeout=3)
+            return any("libcudart" in line and "not found" not in line
+                       for line in linked.stdout.splitlines())
+        except (OSError,subprocess.SubprocessError): return False
+    if sys.platform == "win32":
+        # Windows CUDA_DLL=1 builds never link libcudart directly: glm.exe loads
+        # coli_cuda.dll at runtime via LoadLibrary (backend_loader.c), so there's no
+        # import-table entry for ldd/dumpbin to see. Detect the COLI_CUDA build via a
+        # marker string baked into glm.c's #ifdef COLI_CUDA block instead, and require
+        # coli_cuda.dll to actually sit next to glm.exe (else CUDA init fails at startup).
+        try:
+            with open(GLM,"rb") as f: built=b"[CUDA] mode: routed experts" in f.read()
+        except OSError: return False
+        return built and os.path.exists(os.path.join(os.path.dirname(GLM),"coli_cuda.dll"))
+    return False
 
 def resource_request(a, env):
     ctx=a.ctx or int(env.get("CTX",4096))
@@ -480,8 +494,11 @@ def cmd_run(a):
     need_model(a.model)
     prompt=" ".join(a.prompt) if a.prompt else sys.exit('usage: coli run "your prompt"')
     banner("run")
-    # template ufficiale GLM-5.2: niente \n dopo i ruoli; <think></think> = risposta diretta (nothink)
-    e=env_for(a); e["PROMPT"]=f"[gMASK]<sop><|user|>{prompt}<|assistant|><think></think>"
+    # template ufficiale GLM-5.2: niente \n dopo i ruoli; <think></think> = risposta diretta (nothink).
+    # THINK=1 lascia <think> aperto, stessa convenzione del serve mode (glm.c). EN: THINK=1 leaves
+    # <think> open so the engine emits its reasoning block; the default stays nothink.
+    tk="<think>" if os.environ.get("THINK","0")=="1" else "<think></think>"
+    e=env_for(a); e["PROMPT"]=f"[gMASK]<sop><|user|>{prompt}<|assistant|>{tk}"
     sys.exit(subprocess.call([GLM, str(a.cap)], env=e))
 
 def server_probe(base, api_key=None, timeout=1.5):
@@ -890,6 +907,7 @@ def main():
     common.add_argument("--topp", type=float, default=0); common.add_argument("--topk", type=int, default=0)
     common.add_argument("--temp", type=float, default=None)  # temperatura token (0=greedy, default 1.0+nucleus .95)
     ap=argparse.ArgumentParser(prog="coli", parents=[common], description="colibrì — run GLM-5.2 locally")
+    ap.add_argument("--version", action="version", version=f"colibrì {_version}")
     sub=ap.add_subparsers(dest="cmd")
     sub.add_parser("build", parents=[common]); sub.add_parser("info", parents=[common])
     pp=sub.add_parser("plan",parents=[common])

@@ -49,6 +49,82 @@ errors before streaming headers are sent. `GET /health` exposes
 active/queued/completed/rejected counters, and successful generation responses
 include `x-colibri-queue-wait-ms`.
 
+## Connect a coding CLI or editor
+
+The API is OpenAI-compatible, so most coding CLIs and editor extensions work by
+pointing them at Colibri as an *OpenAI-compatible* provider. Three settings:
+
+- **Base URL** — `http://localhost:8000/v1`
+- **Model** — `glm-5.2-colibri` (or whatever you pass to `--model-id`)
+- **API key** — any non-empty string, e.g. `local`
+
+Colibri needs **no** API key by default, but many clients refuse to start without
+one — give them any dummy value. The key is only enforced if you set `COLI_API_KEY`.
+
+Smoke-test the endpoint first (no key needed unless you set one):
+
+```bash
+curl http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"glm-5.2-colibri","messages":[{"role":"user","content":"hi"}]}'
+```
+
+**aider**
+
+```bash
+export OPENAI_API_BASE=http://localhost:8000/v1
+export OPENAI_API_KEY=local
+aider --model openai/glm-5.2-colibri     # the openai/ prefix routes to OPENAI_API_BASE
+```
+
+**crush** — add a provider to `crush.json` (`~/.config/crush/crush.json`, or
+`%USERPROFILE%\AppData\Local\crush\crush.json` on Windows):
+
+```json
+{
+  "$schema": "https://charm.land/crush.json",
+  "providers": {
+    "colibri": {
+      "name": "Colibri",
+      "type": "openai-compat",
+      "base_url": "http://localhost:8000/v1/",
+      "api_key": "local",
+      "models": [
+        { "name": "GLM-5.2 (Colibri)", "id": "glm-5.2-colibri",
+          "context_window": 131072, "default_max_tokens": 1024 }
+      ]
+    }
+  }
+}
+```
+
+The `"api_key": "local"` dummy is what satisfies clients that demand a key.
+`context_window` is only the client's budget display — set it to whatever your
+KV configuration actually allows.
+
+**Continue, Cline / Roo, `llm`, the OpenAI SDKs, …** — set the provider's base
+URL to `http://localhost:8000/v1`, the model to `glm-5.2-colibri`, and any dummy
+key (`OPENAI_API_KEY` / `OPENAI_BASE_URL` for env-based tools).
+
+> **Set your expectations before connecting an agentic CLI.** Two costs dominate,
+> and the first one is invisible until you know it's there:
+>
+> 1. **Prefill.** Coding agents (crush, aider in repo-map mode, Cline, …) send a
+>    large system prompt plus tool definitions — often 10–20k tokens — *before
+>    your first word*. Prefill on the CPU-streaming path runs at a few tokens per
+>    second (it is attention-bound, see #153), so a 15k-token agent preamble is
+>    **an hour of silent "thinking" before the first output token**. The client
+>    looks hung; it isn't. Smoke-test with the tiny `curl` above first — if that
+>    answers in about a minute, the pipeline works and what you're paying for is
+>    prompt size.
+> 2. **Decode.** Roughly 1 tok/s for a large model, so multi-turn agent loops
+>    (which re-pay the growing context every turn) compound the cost.
+>
+> Practical guidance: single surgical asks with a short context work; iterative
+> agent sessions against a disk-streaming 744B model do not resemble a hosted
+> API and mostly won't be worth the wait. If your client lets you trim or disable
+> its system preamble and tool catalog, do it.
+
 ## Isolated KV contexts
 
 `coli serve --kv-slots N` allocates up to 16 independent sequence contexts.
