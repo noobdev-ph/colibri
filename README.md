@@ -1,3 +1,33 @@
+> ## 🔱 This is a fork of colibrì — with AMD GPU support (now upstream)
+>
+> **[noobdev-ph/colibri](https://github.com/noobdev-ph/colibri)** tracks
+> [JustVugg/colibri](https://github.com/JustVugg/colibri) (synced to **v1.1.0**). It was the
+> origin of the engine's **AMD GPU backend**, which has since been **merged upstream** — so if you
+> just want colibrì on an AMD card, plain upstream now works. What remains fork-specific is the
+> research below.
+>
+> **AMD contributions, now in upstream colibrì:**
+> - **HIP/ROCm backend** ([PR #339](https://github.com/JustVugg/colibri/pull/339), merged) — the CUDA
+>   backend compiles unchanged for AMD through a single mapping header (`c/backend_gpu_compat.h`),
+>   plus a `COLI_GPU_HAS_WMMA` compile-gate that stops gfx GPUs dispatching into empty tensor-core
+>   kernel bodies. Build with `make -C c glm HIP=1 HIP_ARCH=gfxXXXX`.
+> - **GPU backend hardening** ([PR #338](https://github.com/JustVugg/colibri/pull/338), merged) — a
+>   sticky-`cudaGetLastError` fix, the cached-tensor upload contract, and a `COLI_GPU_FAIL_AFTER`
+>   fault-injection hook.
+> - Helped triage the `$TEMP`/ROCm startup crash ([#509](https://github.com/JustVugg/colibri/issues/509)),
+>   fixed upstream via `COLI_TEMP`.
+>
+> **Validated on real hardware** — RX 9070 XT (gfx1201/RDNA4), GLM-5.2 744B, **fmt=4 gs64**:
+> coherent *and executable* code generation, grouped experts computed in VRAM, and output
+> **token-identical to the CPU path**.
+>
+> 📄 The full research (profiling, the rocWMMA-is-the-wrong-lever finding, the PCIe-vs-CPU-matmul
+> inversion, the Rust/Go port analysis) lives in **[`RESEARCH.md`](RESEARCH.md)**.
+>
+> ---
+>
+> <!-- ─────────── Upstream colibrì README below ─────────── -->
+
 <p align="center">
   <img src="assets/colibri.svg" width="500" alt="colibrì — tiny engine, immense model">
 </p>
