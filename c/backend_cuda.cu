@@ -6,6 +6,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP__)
+#include <sys/stat.h>   /* #509: validate $TEMP before ROCm init */
+#endif
 
 struct RaggedKVEntry {
     const void *key;
@@ -481,6 +484,24 @@ static int reserve_pinned(float **ptr,size_t *cap,size_t bytes){
 }
 
 extern "C" int coli_cuda_init(const int *devices, int count) {
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP__)
+    /* #509: ROCm libraries (amd_comgr, MIOpen, roctracer) read $TEMP as a
+     * temporary-DIRECTORY path, but colibri's engine uses TEMP for the
+     * sampling temperature. With e.g. TEMP=0.6, comgr fails to create its
+     * temp files during lazy init on the first stream create, and ROCm's
+     * error-unwind then double-frees an uninitialised queue -> SIGSEGV.
+     * The engine has already parsed the temperature by the time we get
+     * here, so if TEMP is set to something that is not a usable directory,
+     * drop it before touching ROCm; a real temp-dir value is left intact. */
+    {
+        const char *t = std::getenv("TEMP");
+        struct stat st;
+        if (t && *t && (stat(t, &st) != 0 || !S_ISDIR(st.st_mode))) {
+            unsetenv("TEMP");
+            std::fprintf(stderr, "[CUDA] $TEMP was not a directory; cleared it before ROCm init (see #509)\n");
+        }
+    }
+#endif
     int available = 0;
     if (!devices || count < 1 || count > COLI_CUDA_MAX_DEVICES) return 0;
     if (!cuda_ok(cudaGetDeviceCount(&available), "device discovery")) return 0;
