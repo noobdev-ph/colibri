@@ -1,9 +1,12 @@
 # colibrì fork — research findings & work log
 
 A record of the work done on this fork (`noobdev-ph/colibri`) — AMD GPU support,
-generation-quality guards, performance profiling, and the strategic research that
-followed. Paused pending upstream traction and performance; this document is the
-resume point.
+generation-quality guards, performance profiling, the Vulkan-backend evaluation,
+and the strategic research that followed. This document is the resume point.
+
+**Current best config on this machine:** `COLI_VULKAN=1 DRAFT=0` at 0.40 tok/s
+(§7) — with the two knobs that matter most being *disabling speculation* (+65%)
+and *enabling Resizable BAR in firmware* (+118%, and it fails silently without).
 
 Hardware for all measurements: **AMD Ryzen 7 5700G** (8c/16t, Zen 3, AVX2-only —
 no AVX-512), **AMD Radeon RX 9070 XT** (gfx1201 / RDNA4, 16 GB, wave32),
@@ -202,6 +205,15 @@ obscures.
 | HIP mirror mode | 0.22 | 33% | GPU tier mirrors RAM pin — neutral (disk-bound) |
 | HIP `CUDA_RELEASE_HOST` | **0.33** | 61% | VRAM extends the pin; best sustained result |
 | profiling code-gen (§3) | 0.24 | 49% | domain-mismatched pin (10.5% GPU hit) |
+| **Vulkan, `DRAFT=0`** | **0.40** | 55% | §7 — fastest config measured on this box |
+| HIP 12 GB, `DRAFT=0` | 0.33 | 60% | §7 — same binary, speculation off |
+| Vulkan, MTP on | 0.24 | 40% | §7 — MTP costs ~40% when I/O-bound |
+| HIP 12 GB, MTP on | 0.22 | 47% | §7 — same penalty, both backends |
+
+**`DRAFT=0` is the single biggest knob on this machine** (§7): disabling
+speculation is worth +65% on Vulkan and +53% on HIP. Every pre-§7 row above ran
+with MTP enabled on the CPU/Vulkan paths, so they understate what this hardware
+can do.
 
 Hardware facts established: the 5700G APU caps all PCIe at **Gen3** (the Gen5
 NVMe negotiates Gen3 x4 ≈ 3.5 GB/s; the GPU runs Gen3 x16 ≈ 13.4 GB/s). The CPU
@@ -210,13 +222,165 @@ is at its AVX2 ceiling. The single highest-value hardware upgrade is a Zen 4 CPU
 
 ---
 
-## 7. Resume points
+## 7. Vulkan backend evaluation (PR #418) — 130 controlled runs
+
+Upstream issue: **JustVugg/colibri#523**. Tested at `550df5c` (head of #418) on
+the RX 9070 XT (gfx1201, RADV, Mesa 26.1.3, Vulkan 1.4.348). v1.1.1 was checked
+and deliberately *not* merged into the test branch — the `g_draft` guard is
+byte-identical, `npin+=prefix_est` unchanged, `backend_cuda.cu` has no diff, and
+`backend_vulkan.c` exists only on the PR branch, so rebasing would have meant
+benchmarking something that isn't the PR.
+
+### 7.1 Resizable BAR is mandatory, and its absence fails silently
+
+`pick_memtype()` requires `HOST_VISIBLE`, and the expert tier wants
+`HOST_VISIBLE|DEVICE_LOCAL`. With ReBAR **off** that type exists only in a 256 MB
+window, so the tier silently falls back to system RAM *while reporting success*:
+
+| | ReBAR off (256 MB BAR) | ReBAR on (16 GB BAR) |
+|---|---|---|
+| tok/s | 0.11 | 0.24 |
+| GPU VRAM in use | **82 MB** | **6,724 MB** |
+
+The log said `320 hot experts resident (6.04 GB VRAM)` while the card held 82 MB
+and every access crossed PCIe — slower than the pure CPU path, with nothing in
+the output indicating the degraded mode. Diagnosed only via sysfs. Enabling
+ReBAR in firmware is the fix; upstream was asked for an init-time warning that
+compares the chosen memory type against the heap size.
+
+**Operational note for this machine:** `llama-server` is an enabled user service
+and returns after every reboot holding ~15 GB of VRAM. `systemctl --user stop
+llama-server` before any GPU work.
+
+### 7.2 The confound — and the methodology lesson
+
+The first 50-run battery concluded HIP was 32–35% faster than Vulkan. **That was
+wrong**, and the cause was ours: `g_draft` resolves as
+
+```c
+if(g_draft<0){ g_draft = (m.has_mtp && (!g_cuda_enabled || cuda_mtp)) ? 3 : 0; }
+```
+
+so setting `COLI_CUDA=1` on the HIP arms disabled MTP there, while the Vulkan
+arms drafted at 2.00 tokens/forward. The two arms were not running the same
+decode configuration. The engine printed `MTP ACTIVE (draft=3)` vs `draft=0` in
+every log collected; it was seen, misattributed, and not followed up.
+
+A second error compounded it: `experts loaded/token` was used as evidence that
+the Vulkan tier wasn't on the critical path. It is a **router-side counter**
+(`m->ereq += Ke`, `colibri.c:3069`) incremented before any tier is consulted, so
+it cannot show that. Per *position* the arms were always near-identical
+(338.5 vs 330.1).
+
+> **Lesson worth keeping:** the battery was rigorous about everything it knew to
+> control — interleaved arms, frozen `.coli_usage`, fresh process per run,
+> medians over 10 runs, no-overlap checks — and that rigour made a wrong answer
+> look authoritative. Careful methodology downstream of an unverified assumption
+> amplifies error rather than catching it. **Verify what a counter counts before
+> drawing a conclusion from it, and assert that both arms of an A/B are in the
+> same mode before trusting the delta.**
+
+Fix: set `DRAFT` **explicitly** on every arm. The guard only runs under
+`if(g_draft<0)`, so an explicit value bypasses it on both backends.
+
+### 7.3 Corrected results — Vulkan wins (80 runs, `DRAFT=0` both)
+
+| arm | n | tok/s | hit% | vk bucket |
+|---|---|---|---|---|
+| **Vulkan 320 (6.04 GB)** | 10 | **0.3958** | 54.7% | 24.3% |
+| HIP 6 GB | 10 | 0.3200 | 57.3% | — |
+| **Vulkan 640 (12.08 GB)** | 10 | **0.3975** | 54.7% | 33.0% |
+| HIP 12 GB | 10 | 0.3342 | 60.0% | — |
+
+**Vulkan +23.7% at ~6 GB, +18.9% at ~12 GB, no overlap between arms.** Vulkan
+wins with a *lower* hit rate, so it is winning on compute, not caching. HIP
+reproduced its earlier numbers to within 0.4%, confirming no rig drift.
+
+### 7.4 MTP is an I/O amplifier — the most transferable finding
+
+| | MTP off | MTP on | cost |
+|---|---|---|---|
+| Vulkan 640 | 0.3975 | 0.2387 | **−39.9%** |
+| HIP 12 GB | 0.3342 | 0.2176 | **−34.9%** |
+
+Both backends lose roughly equally, so this is a property of speculation on
+storage-bound hardware, not of any backend. With `g_draft=3` each forward
+evaluates 4 positions; at acceptance *a* you emit `1+3a` tokens, so
+
+```
+positions per emitted token = 4 / (1 + 3a)
+```
+
+At our measured 33% acceptance that is **2.0**, and `ereq/token` goes
+330.1 → 674.5 — a 2.04× match to the model. **Only at 100% acceptance is MTP
+I/O-neutral.** Speculation trades fewer forward passes (saving dense compute) for
+more positions (costing expert streaming); on this box dense compute is nearly
+free and expert streaming is the bottleneck, so it pays 2× the scarce resource to
+save on the abundant one. Hit rate also drops ~14pp, because rejected drafts load
+experts the real token stream never wanted and evict ones it did.
+
+Acceptance itself is healthy — **33%, stable across all 20 Vulkan runs**, and the
+`[MTP]` auto-pause at `colibri.c:4910` never fired. So the `#163` CUDA guard's
+stated rationale (acceptance collapse under a GPU tier) does not hold here, yet
+the guard's *effect* would still help. The useful predicate is likely **"is
+expert I/O the bottleneck"**, not "is a GPU tier active" — which would cover
+Vulkan without a special case.
+
+### 7.5 Tiny CPU cache — RAM was never masking residency
+
+`cap=16` (per-layer LRU cut 20× from 320), `DRAFT=0`:
+
+| arm | tok/s | vs `cap=320` |
+|---|---|---|
+| Vulkan 640 | 0.3741 | −5.9% |
+| HIP 12 GB | 0.3429 | +2.6% |
+
+Vulkan +9.2%, no overlap after excluding one outlier. Shrinking the LRU barely
+moved either backend, because the RAM pin tier was already auto-capped to 10
+experts (`cap lowered 320->10, projected peak 50.7 GB`) — the VRAM tiers were
+doing essentially all the work. A prediction that the gap would *widen* was
+wrong; it narrowed.
+
+### 7.6 Data-quality practices that earned their keep
+
+- Compute throughput from `decode_s`, not the printed `tok/s` — the latter rounds
+  to 2 decimals and turned a true +2.35% into an apparent +4.2%.
+- Freeze `.coli_usage` to one snapshot restored before every run, or the learning
+  cache drifts and silently changes what each arm holds.
+- Interleave arms; never run them in blocks.
+- Check for outliers *and* for temporal structure. `HIP12mtp` was bimodal (5 runs
+  ~0.175, 5 ~0.22, clean step at run 12) — but acceptance, `fw/tok`, `ereq` and
+  hit rate were identical across all ten, proving it environmental (page-cache
+  warming of MTP's doubled working set), not algorithmic.
+- Scripts: `full-battery.sh`, `gpu-battery.sh`, `vk-battery.sh`, `hip-default.sh`,
+  `vk-analyze.py` (local, untracked). Bash trap hit twice: a helper's loop
+  variable must be `local` or it clobbers the caller's run counter.
+
+### 7.7 Outcome
+
+Filed as #523 with the correction posted prominently, the issue body bannered and
+the title amended. Upstream verdict: the Vulkan backend is **correct on RDNA4 on a
+real fmt=4/gs=64 container with no ROCm installed** (130/130 runs clean output),
+and on this hardware it is the **fastest configuration measured** — 0.40 tok/s,
+against 0.33 for HIP and 0.22 for the previous CPU best.
+
+---
+
+## 8. Resume points
 
 - **Merge status:** PRs #338 and #339 **merged** into upstream v1.1.0. The #509
   TEMP/ROCm crash was fixed upstream via `COLI_TEMP` (the root-cause fix we
   endorsed); our defensive backend scrub was superseded and dropped from the fork.
   Full-model fmt=4 gs64 validation on the RX 9070 XT: coherent + executable output,
   GPU-computed grouped experts, token-identical to CPU (posted to #339).
+- **Vulkan (§7):** #418 still open upstream. Our datapoint is filed (#523). If it
+  merges, `COLI_VULKAN=1 DRAFT=0` becomes the recommended config on this machine
+  (0.40 tok/s, +20% over HIP) and `coli-play.sh` should gain a `vk` mode. Note
+  `COLI_VK_SHADERS` must be the **full path to `qmatmul.spv`**, not a directory.
+- **Worth proposing upstream (§7.4):** gate MTP on whether expert I/O dominates
+  rather than on `g_cuda_enabled`. Acceptance is fine (33%) but speculation costs
+  ~35–40% on *both* backends here; a storage-bound predicate would cover Vulkan
+  without a special case and would help CPU-only users on slow disks too.
 - **Highest-value next build:** Lever B micro-benchmark (§3) — confirm the ~3×
   CPU-vs-PCIe-GPU per-expert, then prototype GPU compute for LRU experts.
 - **Finish the churn track:** line-novelty detector (§2) → then the acceptance
