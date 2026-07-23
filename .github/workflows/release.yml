@@ -127,6 +127,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG=${GITHUB_REF#refs/tags/}
+          # SHA256SUMS: lets anyone verify a download against what CI built. Named in
+          # the response to #527 (Defender ML false positive) — the checksums are the
+          # public, permanent form of the release-vs-artifact comparison done there.
+          (cd artifacts && sha256sum colibri-*) > artifacts/SHA256SUMS.txt
+          cat artifacts/SHA256SUMS.txt
           # Extract the latest version section from CHANGELOG
           NOTES=$(awk "/^## \\[${TAG#v}\\]/{found=1;next} /^## \\[/{if(found)exit} found{print}" CHANGELOG.md)
           if [ -z "$NOTES" ]; then

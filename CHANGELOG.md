@@ -3,6 +3,54 @@
 All notable changes to colibrì are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.1.1] — 2026-07-23
+
+A same-day patch release. **Windows users on v1.1.0 should upgrade**: Microsoft
+Defender flags the v1.1.0 Windows binary, and the cause was ours.
+
+### Fixed
+
+- **107 KB of zeros were shipped inside every binary** (#527, #532) — and that is
+  what antivirus ML heuristics were reacting to. `static GrDraft g_grd={.max=24};`
+  looks harmless, but `GrDraft` is ~107 KB (the grammar's 1024 static rules plus the
+  PDA walker) and **any** initializer moves the whole struct out of `.bss` and into
+  `.data`, writing 106,848 bytes of near-zero-entropy data into the file — in a
+  *writable* section, which is the classic shape of an unpacking buffer for a packed
+  payload. Section forensics against v1.0.0 (clean on the same Defender definitions)
+  isolated it: identical toolchain, identical PE layout, `.data` 1,840 → 108,752
+  bytes. A Windows build with the fix scans clean where v1.1.0 does not. Every
+  platform's binary also gets smaller: the Linux engine drops 474,904 → 368,016
+  bytes, **-22.5%**.
+- **`python3 openai_server.py` was broken on a clean checkout** (#526) — the gateway
+  still looked for an engine named `glm` after the #391 rename. It resolves
+  `colibri`/`colibri.exe` first now, falling back to `glm` for older trees.
+  `coli serve` was unaffected. Spotted by @RDouglasSharp while debugging #488.
+
+### Added
+
+- **Anthropic Messages API** on `/v1/messages` (#343, #525) — clients that only speak
+  to Anthropic endpoints, Claude Code above all, now work against colibri with no
+  shim: same port, nothing to enable. It is a translation layer over the same
+  generation path, so tools, streaming and the KV cache behave exactly as on
+  `/v1/chat/completions`. Covers system prompts, `text`/`tool_use`/`tool_result`
+  blocks, `input_schema` tools, every `tool_choice` mode, the full named-event SSE
+  sequence with protocol `ping` keepalives, `stop_reason` mapping, extended thinking,
+  and `x-api-key` auth (`Bearer` still works). `stop_sequences`, `top_k` and non-text
+  blocks are refused explicitly rather than silently ignored.
+- **`SHA256SUMS.txt` published with every release** (#530) — verify a download is
+  exactly what CI built from the tagged source.
+- **The Windows engine is uploaded as a CI artifact** (#532) — an antivirus report can
+  now be verified on a pull request instead of only after a release is published.
+
+### Changed
+
+- **Docs: "Get started" now starts by getting the program** (#521). The README told
+  newcomers to download the 372 GB model *before* it told them how to obtain colibri —
+  and for Linux/macOS it never told them at all. New order: get colibri (prebuilt
+  archive or build from source) → get the model (372 GB stated up front) → run it.
+  The obsolete "rename the engine to `glm.exe`" step is gone; archives have shipped a
+  plainly-named `colibri.exe` since #508. Applied in all four languages.
+
 ## [1.1.0] — 2026-07-22
 
 A community release. 27 pull requests from more than 20 contributors, 216 commits since

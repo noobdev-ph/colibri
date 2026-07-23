@@ -645,7 +645,13 @@ typedef struct {
     int on, armed, max;
     uint64_t prop, acc;
 } GrDraft;
-static GrDraft g_grd={.max=24};   /* process-level instance: PROMPT mode + run_serve keep using this */
+/* NO initializer: GrDraft is ~107 KB (Grammar's 1024 static rules + the walker), and any
+ * initializer — even `={.max=24}` — moves the whole struct from .bss into .data, writing
+ * 106,848 bytes of mostly zeros into every binary we ship (#527: the v1.1.0 Windows exe
+ * grew a 108 KB near-zero-entropy .data blob, which is also exactly the shape an antivirus
+ * ML heuristic reads as an unpacking buffer). Static storage is zero-initialized by the C
+ * standard; `max` is set in grammar_setup(), which runs before any read of it. */
+static GrDraft g_grd;             /* process-level instance: PROMPT mode + run_serve keep using this */
 static void couple_prefetch(Model *m, int layer, const int *idx, int Ke);
 static int g_looka=0;    /* LOOKA=1: misura (solo contatori, zero effetti) quanto il routing MoE
                           * e' predicibile IN ANTICIPO — la domanda che decide se un prefetch
@@ -4438,6 +4444,7 @@ static void grammar_teardown(GrDraft *g){
     int max=g->max; memset(g,0,sizeof(*g)); g->max=max;
 }
 static void grammar_setup(GrDraft *g, Tok *T){
+    g->max=24;                    /* was a static initializer; see g_grd's declaration (#527) */
     /* GRAMMAR=<file.gbnf> takes precedence; SCHEMA=<file.json> compiles a JSON-Schema
      * to GBNF. Both fail soft: the engine runs without a grammar, output unchanged. */
     const char *gf=getenv("GRAMMAR");
