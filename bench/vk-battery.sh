@@ -12,8 +12,8 @@ REPO="${COLI_REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
 M="${COLI_MODEL_DIR:-$REPO/model_gs64}"
 SH="$REPO/c/shaders/qmatmul.spv"
 BIN="$REPO/c/colibri"
-OUT="$(cd "$(dirname "$0")" && pwd)/vk-battery"
-REPS=10
+OUT="${COLI_OUT:-$(cd "$(dirname "$0")" && pwd)/vk-battery}"
+REPS="${REPS:-10}"
 PROMPT='[gMASK]<sop><|user|>Explain in two sentences why the sky is blue.<|assistant|><think></think>'
 
 mkdir -p "$OUT"
@@ -25,7 +25,7 @@ log() { printf '\033[38;5;37m[battery] %s\033[0m\n' "$*"; }
 # ---- preflight -------------------------------------------------------------
 log "preflight"
 systemctl --user stop llama-server 2>/dev/null
-pkill -f firefox 2>/dev/null
+[ "${BENCH_KILL_FIREFOX:-0}" = 1 ] && pkill -f firefox 2>/dev/null
 sleep 5
 log "  llama-server: $(systemctl --user is-active llama-server 2>/dev/null || echo inactive) | firefox procs: $(pgrep -c firefox 2>/dev/null || echo 0)"
 
@@ -60,7 +60,7 @@ one_run() {
 
     start=$(date +%s)
     env COLI_VULKAN=1 COLI_VK_EXPERTS="$nexp" COLI_VK_SHADERS="$SH" SNAP="$M" \
-        PROMPT="$PROMPT" NGEN=40 TOPP=0.7 TEMP=0 \
+        PROMPT="$PROMPT" NGEN=40 TOPP=0.7 TEMP=0 DRAFT="${DRAFT:-0}" \
         "$BIN" 320 > "$f" 2>&1
     end=$(date +%s)
     kill "$sampler" 2>/dev/null; wait "$sampler" 2>/dev/null
