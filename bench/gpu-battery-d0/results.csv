@@ -1,0 +1,2 @@
+run,arm,backend,budget,tok_s,hit_total,pin,lru,vk,vram_peak_mb,experts_resident,tier_gb,tier_load_s,model_load_s,prefill_s,decode_s,rss_gb,gpu_calls,fw_per_tok,mtp_acc
+1,VK6,vk,320,0.39,54.6,11.0,19.4,24.3,6724,320,6.04,1.9,9.30,33.08,103.34,42.29,NA,1.03,0

@@ -1,0 +1,42 @@
+=== freeing RAM (closing Firefox) ===
+  MemAvailable: 34 GB -> 43 GB (freed ~9 GB)
+=== [0] model integrity ===
+shards: 141 (expect 144)
+mtp:    3 (expect 3)
+  ok config.json
+  ok tokenizer.json
+mtp sizes (int8 = 3527131672/5366238584/1065950496):
+  3527131672 /home/emcielo/Projects/glm5-2/model_gs64/out-mtp-00000.safetensors
+  5366238584 /home/emcielo/Projects/glm5-2/model_gs64/out-mtp-00001.safetensors
+  1065950496 /home/emcielo/Projects/glm5-2/model_gs64/out-mtp-00002.safetensors
+
+=== [1] COHERENCE: 744B fmt=4 (gs64) code-gen on AMD GPU (routed experts in VRAM) ===
+PROFILE: expert-disk 1011.904s service / 67.211s wait | expert-matmul 92.255s | attention 74.186s (including kvb 5.565s) | lm_head 0.028s | other 58.779s
+prefill 298 tokens in 292.46s | decode 603 tokens in 3034.49s (0.20 tok/s) | expert hit rate 30.7% (pin 0.0% + lru 30.7%) | RSS 32.13 GB
+PROFILE: expert-disk 5302.246s service / 1373.038s wait | expert-matmul 1138.344s | attention 338.550s (including kvb 0.000s) | lm_head 0.000s | other 184.563s
+
+=== [2] EXECUTE the generated code (proof it is correct, not just coherent) ===
+extracted 79 lines
+--- running it ---
+  File "/home/emcielo/Projects/glm5-2/ratelimiter_gs64.py", line 1
+    PROFILO PREFILL (292.46s):
+                          ^
+SyntaxError: invalid decimal literal
+EXIT=1 (see errors above)
+
+=== [3] CPU vs GPU on real weights (same prompt, greedy, no speculation) ===
+CPU vs GPU: differ (expected: GPU float vs CPU int-dot rounding, per #100)
+--- CPU ---
+PROFILO PREFILL (36.74s):
+Sunlight is composed of all colors, but it's scattered in all directions by
+ gases and particles in Earth's atmosphere. Blue light is scattered more than other colors
+ because it travels as shorter, smaller waves
+--- GPU ---
+PROFILO PREFILL (36.32s):
+Sunlight is composed of all colors, but it's scattered in all directions by
+ gases and particles in Earth's atmosphere. Blue light is scattered more than other colors
+ because it travels as shorter, smaller waves[CUDA] resident set: 1695 tensors, 12.00 GB VRAM
+  decode 40 tokens in 132.93s (0.30 tok/s) | expert hit rate 39.0%
+  decode 40 tokens in 158.74s (0.25 tok/s) | expert hit rate 42.8%
+
+TESTS_DONE

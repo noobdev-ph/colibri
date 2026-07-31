@@ -1,0 +1,51 @@
+[OMP] hot-thread tuning: re-exec once (COLI_NO_OMP_TUNE=1 to skip)
+[policy] --topp/--topk drop low-weight experts (~1.6x fewer reads, small quality cost)
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+[VK] VRAM pressure-proofing: memory_priority on, memory_budget on
+[VK] ready: AMD Radeon RX 9070 XT (RADV GFX1201), compute qfam 0, memtype 3, fused gate+up, absorb attention
+[VK] expert tier active: routed quantized experts on the GPU (budget 320)
+[MTP] active: native speculative decoding (draft=3)
+[USAGE] expert history: 458165 selections (/home/emcielo/Projects/glm5-2/model_gs64/.coli_usage)
+[PIN] placement: 0 VRAM + 778 RAM expert (16.5 GB warm) in 5s da /home/emcielo/Projects/glm5-2/model_gs64/.coli_usage
+[RAM_GB=50.7 auto] resident 27.9 GB + reserve 6.3 GB (ws 1.4, KV 1x4096 0.7, kvb 0.5), experts 21.2 MB x 77 layers -> cap lowered 320->10 (projected peak 50.5 GB)
+[VK] expert tier: 320 hot experts resident (6.04 GB VRAM, 1.9s, top-320 of history)
+[stop] 18 stop tokens: 154820 154827 154829 154821 154822 154823 154824 154825 154826 154828 154830 154831 154832 154833 154834 154835 154836 154837 (15 from the tokenizer's special set)
+== GLM C engine (glm_moe_dsa), cache=320 experts/layer | experts@8-bit dense@8-bit | idot: avx2 ==
+loaded in 9.56s | resident dense: 10869.90 MB | layers=78 experts=256 | MTP ACTIVE (draft=3)
+prompt: 17 tokens | generating up to 40 (EOS stop=154820) | n-gram draft=3
+[gMASK]<sop><|user|>Explain in two sentences why the sky is blue.<|assistant|><think></think>[prefill] layer 1/78 · 17 token
+[prefill] layer 5/78 · 17 token
+[prefill] layer 9/78 · 17 token
+[prefill] layer 13/78 · 17 token
+[prefill] layer 17/78 · 17 token
+[prefill] layer 21/78 · 17 token
+[prefill] layer 25/78 · 17 token
+[prefill] layer 29/78 · 17 token
+[prefill] layer 33/78 · 17 token
+[prefill] layer 37/78 · 17 token
+[prefill] layer 41/78 · 17 token
+[prefill] layer 45/78 · 17 token
+[prefill] layer 49/78 · 17 token
+[prefill] layer 53/78 · 17 token
+[prefill] layer 57/78 · 17 token
+[prefill] layer 61/78 · 17 token
+[prefill] layer 65/78 · 17 token
+[prefill] layer 69/78 · 17 token
+[prefill] layer 73/78 · 17 token
+[prefill] layer 77/78 · 17 token
+[prefill] layer 78/78 · 17 token
+[SPEC_PIN] draft+verify pinned to the S=1 kernel family: int4=exact int8=idot (#163; SPEC_PIN=0 for A/B)
+PROFILO PREFILL (32.64s):
+PROFILE: expert-disk 402.800s service / 21.797s wait | expert-matmul 6.159s | attention 3.348s (including kvb 0.328s) | lm_head 0.024s | other 1.308s
+ATTENTION: projection/RoPE 1.032s | score-softmax-value 0.050s | output projection 1.938s
+Sunlight is composed of all colors, but it's scattered in all directions by
+[t=16  RSS 44.75 GB  hit 39%  0.22 tok/s  1.67 tok/fw]
+ gases and particles in Earth's atmosphere. Blue light is scattered more than other colors
+[t=32  RSS 45.54 GB  hit 40%  0.24 tok/s  1.94 tok/fw]
+ because it travels as shorter, smaller waves
+---
+prefill 17 tokens in 32.64s | decode 40 tokens in 165.78s (0.24 tok/s) | expert hit rate 38.8% (pin 8.7% + lru 16.9% + vk 13.2%) | RSS 45.91 GB
+experts loaded/token: 677.0 (per-layer 9.03 across 75; baseline topk=8) | TOPK=0 TOPP=0.70
+speculation: 2.00 tokens/forward (20 forwards per 40 tokens) | MTP acceptance 33% (20/60)
+PROFILE: expert-disk 846.488s service / 96.582s wait | expert-matmul 30.277s | attention 27.911s (including kvb 0.000s) | lm_head 0.000s | other 11.012s
+ATTENTION: projection/RoPE 6.525s | score-softmax-value 11.582s | output projection 9.801s

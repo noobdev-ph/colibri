@@ -1,0 +1,5 @@
+=== STAGE 1: record this prompt's expert usage (CPU) ===
+  recorded  expert-usage entries
+=== STAGE 2: free RAM (close Firefox) ===
+  MemAvailable 48 -> 48 GB
+=== STAGE 3: WARM Vulkan run — pin this prompt's experts into the VK tier ===
