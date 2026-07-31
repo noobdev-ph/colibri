@@ -364,6 +364,17 @@ real fmt=4/gs=64 container with no ROCm installed** (130/130 runs clean output),
 and on this hardware it is the **fastest configuration measured** — 0.40 tok/s,
 against 0.33 for HIP and 0.22 for the previous CPU best.
 
+> **Footnote — results that live only in #523.** The issue thread continued past
+> this writeup and carries one measurement not written up above: a 20-run
+> `COLI_MMAP` A/B run 2026-07-24, answering @xxxajk's question of whether the
+> expert LRU uses MMIO. It does not, and enabling it costs throughput — the
+> default `pread`+slab path beats `COLI_MMAP=1` by **+25.4%** (paired median,
+> wins 9 of 10 pairs, sign test p = 0.021), with an *identical* hit rate in both
+> arms, so the cost is the fault path plus memory pressure rather than any
+> caching difference. Raw data: `mmap-battery/results.csv`. See
+> [#523](https://github.com/JustVugg/colibri/issues/523) for the full exchange,
+> including JustVugg's 2026-07-29 note that PR #418 has since merged to `dev`.
+
 ---
 
 ## 8. Resume points
