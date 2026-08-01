@@ -438,39 +438,73 @@ copies). io_uring buys the last ~10% by cutting wait 39.6s→26s.
 > aggregated across loader threads and double-counted. Halving or doubling
 > `PIPE_WORKERS` moves it not at all. Read it as an accounting artifact.
 
-### 8.3 Is the limit the hardware? No — decode uses 39% of the drive
+### 8.3 Clean two-battery replication (n=10–11/arm) — the numbers to cite
 
-Measured `nvme1n1` read throughput (`/sys/block` sampling, 2s interval) across a
-single instrumented `URING=1 DIRECT=1` run, split by phase:
+§8.1–8.2 were an n=3 screening. This is the confirmation run, under a stricter
+protocol: **one** canonical `.coli_usage` (sha `45ac8a59`, hash-verified identical
+in both batteries, so no snapshot drift), machine quiesced, **per-process**
+`/proc/<pid>/io read_bytes` instead of device-wide sampling (immune to any other
+traffic), and **two independent batteries** rather than one pooled run.
 
-| phase | median | max |
+Pooled, throughput from `decode_s`:
+
+| arm | tok/s | vs base | GB read | MB/s | % of drive |
+|---|---|---|---|---|---|
+| **`URING=1 DIRECT=1`** | **0.4339** | **+31.7%** | 196 | 1429–1508 | 42–44% |
+| `DIRECT=1` | 0.3992 | +21.1% | 195 | 1349–1432 | 39–42% |
+| defaults | 0.3295 | — | 236 | 1403–1441 | 41–42% |
+| `URING=1` (buffered) | 0.2836 | −13.9% | 236 | 1211–1219 | 35–36% |
+
+Best `base` run 0.339 vs worst `uringd` run 0.352 — **no overlap**. The two
+batteries agree within +1.1%…+5.2% on every arm.
+
+**The mechanism is fewer bytes, not faster bytes.** O_DIRECT arms read **195 GB**
+where buffered arms read **236 GB** — 17% less, at an identical 55% hit rate, with
+per-run spread under 1 GB across 21 runs. Kernel readahead was fetching ~41 GB per
+run that the engine never uses. This is the most reproducible measurement in this
+document.
+
+> **Caveat.** The `DIRECT=1` arm is *bimodal* in battery A (two runs ~0.32, four
+> ~0.41) while stable in battery B. Its median is therefore soft. `uringd` is both
+> faster and tighter (0.404–0.469), which is why it is the recommendation.
+
+### 8.4 Is the limit the hardware? No — and it is not queue depth either
+
+`prober.c` reproduces colibri's access pattern exactly — O_DIRECT random reads of
+the engine's own 21.2 MB expert size, across the real 143 shards — and asks what
+the drive can actually do:
+
+| request size | QD=1 | QD=8 |
 |---|---|---|
-| model load (sequential) | 1151 MB/s | **3392 MB/s** |
-| prefill | 1590 MB/s | 2489 MB/s |
-| **decode** | **1349 MB/s** | 1782 MB/s |
+| 21.2 MB | **3417 MB/s** | **3911 MB/s** |
+| 4 MB | 2905 | 3862 |
+| 1 MB | 1902 | 3824 |
+| 0.5 MB | 1542 | 3562 |
+| 0.25 MB | 1105 | 3341 |
+| 0.125 MB | 723 | 2997 |
 
-The P510 is Gen3 x4-capped on this 5700G (APU, all lanes Gen3) at a practical
-~3400–3800 MB/s. **Decode sustains 39% of that, while the same drive in the same
-run reaches 3392 MB/s during sequential model load.** The link is demonstrably
-capable of 2.5× what decode extracts.
+The engine achieves **1403–1508 MB/s**, i.e. **39–44%** of what this drive gives
+under its own workload. The P510 is not the ceiling and neither is the Gen3 x4 cap
+imposed by the 5700G APU — no storage or CPU upgrade addresses this gap.
 
-So the ceiling here is **not** the SSD and not the PCIe generation. It is request
-shaping: decode issues scattered ~20 MB expert reads that stall at every layer
-boundary, and no amount of loader threads fixes that because the depth is bounded
-by experts-needed-per-layer. That is precisely the structural problem #441's
-cross-layer prefetch is meant to solve — and why PILOT, which *does* fill the gap,
-currently pays for it in extra bytes. A prefetch that raised queue depth **without
-raising bytes read** is the remaining lever, and it is worth roughly 2× on paper.
+**This also corrects §8.2 and refines upstream #441.** Queue depth is *not* the
+lever: at 21 MB requests, QD1 already reaches 3417 MB/s, and `PIPE_WORKERS`
+∈ {4,8,16} were indistinguishable in §8.2 for exactly that reason. The only
+configuration in the whole matrix that lands near colibri's 1349–1508 MB/s is
+**serialized sub-megabyte reads** (QD1 @ 0.5 MB = 1542 MB/s). So the deficit is
+small effective request size *combined with* serialization — which points at
+**coalescing**, not at more loader threads or deeper queues.
 
-### 8.4 Corroboration
+### 8.5 Corroboration
 
 Issue #640 (i9-12900K, 64 GB, Samsung 990 Pro — a Gen4 drive) reports 0.34 tok/s
-with these same defaults, against our 0.356. Two different drives, two different
+with these same defaults, against our 0.3295. Two different drives, two different
 CPUs, the same number — the shared constraint was the software configuration,
 not anyone's storage.
 
-**Scripts:** `io-battery.sh` (arms, interleaving, per-run PROFILE capture),
-raw data in `io-battery/` and `io-battery-r2/`.
+**Scripts:** `io-battery.sh` (arms, interleaving, per-run PROFILE + per-process I/O),
+`clean-2026-08-01/prober.c` (drive capability), `clean-2026-08-01/analyze.py`.
+Raw data in `io-battery/`, `io-battery-r2/`, `clean-2026-08-01/battery{A,B}/`.
 
 ---
 
