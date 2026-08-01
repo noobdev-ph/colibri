@@ -377,7 +377,104 @@ against 0.33 for HIP and 0.22 for the previous CPU best.
 
 ---
 
-## 8. Resume points
+## 8. The expert-I/O knobs — +47% for free (2026-08-01)
+
+Every battery in §7, and every number in this document before this section, was
+measured with the **entire expert-I/O subsystem at its defaults**: `PIPE=0`,
+`URING=0`, `DIRECT=0`, `PILOT=0`, `PILOT_WORKERS=1`. On a host whose decode
+profile is `expert-disk 154s service / 57s wait` against `expert-matmul 19s`,
+that left the single largest lossless win on the table.
+
+Upstream #441 names `PILOT_WORKERS=1` as an NVMe queue-depth-1 bug. `PIPE`,
+`URING` and `DIRECT` are documented **byte-identical**; `PILOT_REAL` is
+**value-preserving**. So none of this trades quality — and measured hit rate
+stayed flat at 55–56% across every non-PILOT arm, confirming pure I/O effects.
+
+### 8.1 Screening (n=3/arm, interleaved, frozen `.coli_usage`, `DRAFT=0`, VK 320)
+
+| arm | tok/s | vs base | disk wait | hit |
+|---|---|---|---|---|
+| **`URING=1 DIRECT=1`** | **0.4965** | **+39.3%** | 26.1s | 55.3% |
+| + `PILOT` | 0.4711 | +32.2% | 22.3s | 66.2% |
+| base (defaults) | 0.3564 | — | 57.4s | 56.1% |
+| `PIPE=1` | 0.3248 | −8.9% | 61.6s | 56.1% |
+| `URING=1` (buffered) | 0.3149 | −11.7% | 59.3s | 55.1% |
+| `PIPE=1 PILOT=1 PILOT_REAL=1` | 0.2756 | −22.7% | 68.7s | 65.4% |
+
+**O_DIRECT is the active ingredient, not io_uring.** Buffered io_uring *loses*
+11.7%; adding `DIRECT=1` swings the same path to +39%. With a 400 GB model
+against 60 GB of RAM the page cache can never hit, so the copy and readahead are
+pure tax. The engine's own advisory says exactly this — *"cold NVMe: DIRECT=1
+avoids page-cache copy/readahead bottlenecks"* — we had simply never enabled it.
+
+**PILOT is a second I/O amplifier, exactly like MTP (§7.4).** It lifts hit rate
+55%→66%, so the cross-layer prediction genuinely works, but it reads 2–3× the
+bytes (disk service 154s→492s) and still loses. Under O_DIRECT it becomes nearly
+affordable yet never beats plain `uringd`. The §7.4 rule generalises: **on a
+storage-bound host, anything that increases bytes read loses, even when it
+improves hit rate.**
+
+### 8.2 Round 2 — worker count is not a lever
+
+| arm | tok/s | vs base | disk wait |
+|---|---|---|---|
+| `URING=1 DIRECT=1 PIPE_WORKERS=16` | 0.5227 | +46.7% | 26.2s |
+| `URING=1 DIRECT=1 PIPE_WORKERS=4` | 0.5166 | +44.9% | 26.5s |
+| `PIPE=1 DIRECT=1` | 0.4941 | +38.6% | 32.6s |
+| `URING=1 DIRECT=1 PIPE_WORKERS=8` | 0.4911 | +37.8% | 25.8s |
+| `DIRECT=1` alone | 0.4762 | +33.6% | 39.6s |
+
+`PIPE_WORKERS` ∈ {4, 8, 16} are indistinguishable and wait time is pinned at
+~26s — the queue saturates at 4. `DIRECT=1` **alone** already delivers +34% with
+*no* loader threads, and is the only fast arm with clean profile accounting
+(matmul 15.7s, *below* the 19.1s baseline, because it stops doing page-cache
+copies). io_uring buys the last ~10% by cutting wait 39.6s→26s.
+
+**Recommended config on this box:** `URING=1 DIRECT=1` (workers default 8).
+
+> **Caveat on the `expert-matmul` figure under `PIPE`/`URING`.** It inflates to
+> ~45s from 19s, which looks like CPU contention but is not: the decode PROFILE
+> residual goes **negative** (`other -11.1s`), so the per-thread timers are being
+> aggregated across loader threads and double-counted. Halving or doubling
+> `PIPE_WORKERS` moves it not at all. Read it as an accounting artifact.
+
+### 8.3 Is the limit the hardware? No — decode uses 39% of the drive
+
+Measured `nvme1n1` read throughput (`/sys/block` sampling, 2s interval) across a
+single instrumented `URING=1 DIRECT=1` run, split by phase:
+
+| phase | median | max |
+|---|---|---|
+| model load (sequential) | 1151 MB/s | **3392 MB/s** |
+| prefill | 1590 MB/s | 2489 MB/s |
+| **decode** | **1349 MB/s** | 1782 MB/s |
+
+The P510 is Gen3 x4-capped on this 5700G (APU, all lanes Gen3) at a practical
+~3400–3800 MB/s. **Decode sustains 39% of that, while the same drive in the same
+run reaches 3392 MB/s during sequential model load.** The link is demonstrably
+capable of 2.5× what decode extracts.
+
+So the ceiling here is **not** the SSD and not the PCIe generation. It is request
+shaping: decode issues scattered ~20 MB expert reads that stall at every layer
+boundary, and no amount of loader threads fixes that because the depth is bounded
+by experts-needed-per-layer. That is precisely the structural problem #441's
+cross-layer prefetch is meant to solve — and why PILOT, which *does* fill the gap,
+currently pays for it in extra bytes. A prefetch that raised queue depth **without
+raising bytes read** is the remaining lever, and it is worth roughly 2× on paper.
+
+### 8.4 Corroboration
+
+Issue #640 (i9-12900K, 64 GB, Samsung 990 Pro — a Gen4 drive) reports 0.34 tok/s
+with these same defaults, against our 0.356. Two different drives, two different
+CPUs, the same number — the shared constraint was the software configuration,
+not anyone's storage.
+
+**Scripts:** `io-battery.sh` (arms, interleaving, per-run PROFILE capture),
+raw data in `io-battery/` and `io-battery-r2/`.
+
+---
+
+## 9. Resume points
 
 - **Merge status:** PRs #338 and #339 **merged** into upstream v1.1.0. The #509
   TEMP/ROCm crash was fixed upstream via `COLI_TEMP` (the root-cause fix we
