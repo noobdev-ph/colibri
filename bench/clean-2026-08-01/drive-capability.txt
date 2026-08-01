@@ -1,0 +1,27 @@
+# Drive capability under colibri's access pattern (O_DIRECT random reads on the real shards)
+# Crucial P510 2TB, Gen3 x4 (5700G APU caps it), btrfs compress=zstd:3, 143 shards, 400 GB
+# 2026-08-01T07:41:22Z
+
+## queue-depth sweep at the engine's 21.2 MB expert size
+QD=1   read=21.2MB     3376 MB/s  (26.4 GB in 8.0s, 143 shards)
+QD=2   read=21.2MB     3871 MB/s  (30.3 GB in 8.0s, 143 shards)
+QD=4   read=21.2MB     3878 MB/s  (30.4 GB in 8.0s, 143 shards)
+QD=8   read=21.2MB     3910 MB/s  (30.7 GB in 8.0s, 143 shards)
+QD=16  read=21.2MB     3914 MB/s  (30.9 GB in 8.1s, 143 shards)
+QD=32  read=21.2MB     3950 MB/s  (31.5 GB in 8.2s, 143 shards)
+
+## request-size sweep at QD=8
+QD=8   read=21.2MB     3911 MB/s  (30.7 GB in 8.0s, 143 shards)
+QD=8   read=4.0MB     3862 MB/s  (30.2 GB in 8.0s, 143 shards)
+QD=8   read=1.0MB     3824 MB/s  (29.9 GB in 8.0s, 143 shards)
+QD=8   read=0.5MB     3562 MB/s  (27.9 GB in 8.0s, 143 shards)
+QD=8   read=0.2MB     3341 MB/s  (26.1 GB in 8.0s, 143 shards)
+QD=8   read=0.1MB     2997 MB/s  (23.4 GB in 8.0s, 143 shards)
+
+## request-size sweep at QD=1 (serialized)
+QD=1   read=21.2MB     3417 MB/s  (26.7 GB in 8.0s, 143 shards)
+QD=1   read=4.0MB     2905 MB/s  (22.7 GB in 8.0s, 143 shards)
+QD=1   read=1.0MB     1902 MB/s  (14.9 GB in 8.0s, 143 shards)
+QD=1   read=0.5MB     1542 MB/s  (12.1 GB in 8.0s, 143 shards)
+QD=1   read=0.2MB     1105 MB/s  (8.6 GB in 8.0s, 143 shards)
+QD=1   read=0.1MB      723 MB/s  (5.7 GB in 8.0s, 143 shards)

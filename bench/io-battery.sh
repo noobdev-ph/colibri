@@ -30,7 +30,7 @@ PROMPT='[gMASK]<sop><|user|>Explain in two sentences why the sky is blue.<|assis
 
 mkdir -p "$OUT"
 CSV="$OUT/results.csv"
-[ -f "$CSV" ] || echo "run,arm,vk_experts,tok_s,hit_total,pin,lru,vk,vram_peak_mb,experts_resident,tier_gb,tier_load_s,model_load_s,prefill_s,decode_s,rss_gb,edisk_service_s,edisk_wait_s,ematmul_s" > "$CSV"
+[ -f "$CSV" ] || echo "run,arm,vk_experts,tok_s,hit_total,pin,lru,vk,vram_peak_mb,experts_resident,tier_gb,tier_load_s,model_load_s,prefill_s,decode_s,rss_gb,edisk_service_s,edisk_wait_s,ematmul_s,read_gb,read_MBps_decode" > "$CSV"
 
 log() { printf '\033[38;5;37m[io] %s\033[0m\n' "$*"; }
 
@@ -91,8 +91,22 @@ one_run() {
     # shellcheck disable=SC2046
     env $(arm_env "$arm") COLI_VULKAN=1 COLI_VK_EXPERTS="$NEXP" COLI_VK_SHADERS="$SH" SNAP="$M" \
         PROMPT="$PROMPT" NGEN=40 TOPP=0.7 TEMP=0 DRAFT=0 \
-        "$BIN" 320 > "$f" 2>&1
+        "$BIN" 320 > "$f" 2>&1 &
+    cpid=$!
+    # per-process block-device reads: immune to any other traffic on the device
+    # NB: never redirect awk straight at the file -- the redirect truncates first,
+    # so the final iteration (process already gone) would blank the last good value.
+    ( while kill -0 "$cpid" 2>/dev/null; do
+        v=$(awk '/^read_bytes:/{print $2}' "/proc/$cpid/io" 2>/dev/null)
+        [ -n "$v" ] && echo "$v" > "$OUT/.io.$idx"
+        sleep 1
+      done ) &
+    iosampler=$!
+    wait "$cpid"
+    kill "$iosampler" 2>/dev/null; wait "$iosampler" 2>/dev/null
     end=$(date +%s)
+    rbytes=$(cat "$OUT/.io.$idx" 2>/dev/null); rm -f "$OUT/.io.$idx"
+    [ -n "$rbytes" ] || rbytes=0
     kill "$sampler" 2>/dev/null; wait "$sampler" 2>/dev/null
     peak=$(cat "$OUT/.peak.$idx" 2>/dev/null || echo 0); rm -f "$OUT/.peak.$idx"
 
@@ -116,8 +130,10 @@ one_run() {
     ewait=$(echo "$prof"| grep -oP 'expert-disk [0-9.]+s service / \K[0-9.]+' | tail -1)
     emm=$(echo "$prof"  | grep -oP 'expert-matmul \K[0-9.]+' | tail -1)
 
-    echo "$idx,$arm,$NEXP,${toks:-NA},${hit:-NA},${pin:-NA},${lru:-NA},${vk:-NA},$peak,${res:-NA},${tgb:-NA},${tls:-NA},${mls:-NA},${pre:-NA},${dec:-NA},${rss:-NA},${esvc:-NA},${ewait:-NA},${emm:-NA}" >> "$CSV"
-    log "run $idx [$arm] -> ${toks:-FAIL} tok/s | hit ${hit:-?}% | disk ${esvc:-?}s/${ewait:-?}s wait | matmul ${emm:-?}s | wall $((end-start))s"
+    rgb=$(echo "scale=2; $rbytes/1073741824" | bc -l 2>/dev/null || echo 0)
+    rbw=$(echo "scale=1; $rbytes/1048576/${dec:-1}" | bc -l 2>/dev/null || echo 0)
+    echo "$idx,$arm,$NEXP,${toks:-NA},${hit:-NA},${pin:-NA},${lru:-NA},${vk:-NA},$peak,${res:-NA},${tgb:-NA},${tls:-NA},${mls:-NA},${pre:-NA},${dec:-NA},${rss:-NA},${esvc:-NA},${ewait:-NA},${emm:-NA},${rgb},${rbw}" >> "$CSV"
+    log "run $idx [$arm] -> ${toks:-FAIL} tok/s | hit ${hit:-?}% | disk ${esvc:-?}s/${ewait:-?}s wait | matmul ${emm:-?}s | read ${rgb}GB @ ${rbw}MB/s | wall $((end-start))s"
 }
 
 # ---- interleaved battery -----------------------------------------------------

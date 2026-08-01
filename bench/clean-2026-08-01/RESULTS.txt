@@ -1,0 +1,40 @@
+
+============================================================================================
+BATTERY A   (n=23 runs)
+============================================================================================
+arm                     n   tok/s  vs base  GB read    MB/s  %drive    wait
+defaults (buffered)     6  0.3253    +0.0%    235.7    1403     41%   57.5s
+URING=1 (buffered)      6  0.2828   -13.1%    236.4    1211     35%   58.7s
+DIRECT=1                6  0.3945   +21.3%    194.7    1349     39%   41.6s
+URING=1 DIRECT=1        5  0.4258   +30.9%    196.5    1429     42%   25.7s
+
+============================================================================================
+BATTERY B  (independent replication, identical frozen snapshot)   (n=20 runs)
+============================================================================================
+arm                     n   tok/s  vs base  GB read    MB/s  %drive    wait
+defaults (buffered)     5  0.3341    +0.0%    236.0    1441     42%   57.2s
+URING=1 (buffered)      5  0.2859   -14.4%    236.3    1219     36%   59.2s
+DIRECT=1                5  0.4152   +24.3%    195.1    1432     42%   41.3s
+URING=1 DIRECT=1        5  0.4466   +33.7%    196.8    1508     44%   26.1s
+
+============================================================================================
+REPLICATION CHECK — do the two batteries agree?
+============================================================================================
+arm                           A        B    delta
+defaults (buffered)      0.3253   0.3341    +2.7%
+URING=1 (buffered)       0.2828   0.2859    +1.1%
+DIRECT=1                 0.3945   0.4152    +5.2%
+URING=1 DIRECT=1         0.4258   0.4466    +4.9%
+
+============================================================================================
+POOLED (n=10/arm)
+============================================================================================
+defaults (buffered)    n=11 median 0.3295  range 0.296-0.339  vs base   +0.0%
+URING=1 (buffered)     n=11 median 0.2836  range 0.259-0.302  vs base  -13.9%
+DIRECT=1               n=11 median 0.3992  range 0.318-0.422  vs base  +21.1%
+URING=1 DIRECT=1       n=10 median 0.4339  range 0.352-0.469  vs base  +31.7%
+
+  headline: best base run 0.339 vs worst uringd run 0.352 -> NO OVERLAP
+
+  drive capability under this exact access pattern (prober.c):
+    QD1 @21.2MB 3417 MB/s   QD8 @21.2MB 3911 MB/s
