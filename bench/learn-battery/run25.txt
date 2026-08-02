@@ -1,0 +1,70 @@
+[OMP] hot-thread tuning: re-exec once (COLI_NO_OMP_TUNE=1 to skip)
+[policy] --topp/--topk drop low-weight experts (~1.6x fewer reads, small quality cost)
+[PIPE] PIPE_WORKERS is set — enabling the async pipe (PIPE=1 implied; set PIPE=0 to override)
+[URING] queued expert I/O active (depth=512, workers=8, DIRECT=1)
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+[VK] VRAM pressure-proofing: memory_priority on, memory_budget on
+[VK] ready: AMD Radeon RX 9070 XT (RADV GFX1201), compute qfam 0, memtype 3, fused gate+up, absorb attention
+[VK] expert tier active: routed quantized experts on the GPU (budget 320)
+[MTP] active: native speculative decoding (draft=0)
+[USAGE] expert history: 2458080 selections (/home/emcielo/Projects/colibri-dev/model_gs64/.coli_usage)
+[PIN] placement: 0 VRAM + 763 RAM expert (16.2 GB warm) in 6s da /home/emcielo/Projects/colibri-dev/model_gs64/.coli_usage
+[RAM_GB=50.1 auto] resident 27.6 GB + reserve 6.3 GB (ws 1.4, KV 1x4096 0.7, kvb 0.5), experts 21.2 MB x 77 layers -> cap lowered 320->9 (projected peak 48.6 GB)
+[VK] expert tier: 320 hot experts resident (6.04 GB VRAM, 1.9s, top-320 of history)
+[stop] 18 stop tokens: 154820 154827 154829 154821 154822 154823 154824 154825 154826 154828 154830 154831 154832 154833 154834 154835 154836 154837 (15 from the tokenizer's special set)
+== GLM C engine (glm_moe_dsa), cache=320 experts/layer | experts@8-bit dense@8-bit | idot: avx2 ==
+loaded in 9.99s | resident dense: 10869.90 MB | layers=78 experts=256 | MTP ACTIVE (draft=0)
+prompt: 243 tokens | generating up to 40 (EOS stop=154820) | n-gram draft=0
+[gMASK]<sop><|user|>Here is the expert-streaming hot path from an inference engine:
+
+static int expert_load(ExpertSlot *s, int layer, int eid) {
+    off_t off = shard_offset(layer, eid);
+    size_t n   = expert_bytes(layer);
+    ssize_t r  = pread(s->fd, s->slab, n, off);
+    if (r < 0) return -errno;
+    if ((size_t)r != n) return -EIO;
+    s->layer = layer; s->eid = eid;
+    return 0;
+}
+
+It issues one blocking pread per expert, so the NVMe sees queue depth 1, and each
+expert is ~21 MB. Rewrite it to batch up to 8 outstanding reads with io_uring,
+preserving the exact function signature and error semantics (negative errno on
+failure, short read is -EIO). Handle partial completions and requeue them. Then
+explain what alignment constraints O_DIRECT imposes on s->slab, the offset, and
+the length, and how you would coalesce two experts that are adjacent in the same
+shard into a single request.<|assistant|><think></think>[prefill] layer 1/78 · 243 token
+[prefill] layer 5/78 · 243 token
+[prefill] layer 9/78 · 243 token
+[prefill] layer 13/78 · 243 token
+[prefill] layer 17/78 · 243 token
+[prefill] layer 21/78 · 243 token
+[prefill] layer 25/78 · 243 token
+[prefill] layer 29/78 · 243 token
+[prefill] layer 33/78 · 243 token
+[prefill] layer 37/78 · 243 token
+[prefill] layer 41/78 · 243 token
+[prefill] layer 45/78 · 243 token
+[prefill] layer 49/78 · 243 token
+[prefill] layer 53/78 · 243 token
+[prefill] layer 57/78 · 243 token
+[prefill] layer 61/78 · 243 token
+[prefill] layer 65/78 · 243 token
+[prefill] layer 69/78 · 243 token
+[prefill] layer 73/78 · 243 token
+[prefill] layer 77/78 · 243 token
+[prefill] layer 78/78 · 243 token
+PROFILO PREFILL (216.83s):
+PROFILE: expert-disk 93.905s service / 4.988s wait | expert-matmul 114.489s | attention 61.255s (including kvb 4.821s) | lm_head 0.024s | other 36.072s
+ATTENTION: projection/RoPE 16.319s | score-softmax-value 4.249s | output projection 35.849s
+Here is the implementation of the `expert_load` function using `io_uring
+[t=16  RSS 41.21 GB  hit 48%  0.39 tok/s  1.00 tok/fw]
+` to batch up to 8 outstanding reads, followed by the explanation of `
+[t=32  RSS 41.21 GB  hit 47%  0.28 tok/s  1.00 tok/fw]
+O_DIRECT` alignment constraints and the co
+---
+prefill 243 tokens in 216.83s | decode 40 tokens in 140.42s (0.28 tok/s) | expert hit rate 46.4% (pin 10.9% + lru 17.2% + vk 18.3%) | RSS 41.21 GB
+experts loaded/token: 360.1 (per-layer 4.80 across 75; baseline topk=8) | TOPK=0 TOPP=0.70
+speculation: 1.03 tokens/forward (39 forwards per 40 tokens) | MTP acceptance 0% (0/0)
+PROFILE: expert-disk 0.000s service / 46.023s wait | expert-matmul 84.795s | attention 34.757s (including kvb 0.000s) | lm_head 0.000s | other -25.155s
+ATTENTION: projection/RoPE 9.677s | score-softmax-value 12.805s | output projection 12.269s
