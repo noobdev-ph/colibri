@@ -36,6 +36,16 @@ c/tok_test
 c/backend_cuda.o
 c/backend_cuda_test
 c/backend_loader.o
+# The Vulkan object, the one backend missing from this list — same omission as
+# #858/#868, one backend over: `make VK=1` left `?? c/backend_vulkan.o` in
+# `git status` on every Vulkan build.
+c/backend_vulkan.o
+# glslc output. `make VK=1` compiles every c/shaders/*.comp to a .spv beside it;
+# only qmatmul.spv is tracked (shipped for hosts without glslc), so the other
+# three showed up untracked after every build. Tracked files ignore these rules,
+# but the negation keeps the intent explicit.
+c/shaders/*.spv
+!c/shaders/qmatmul.spv
 c/coli_cuda.dll
 c/coli_cuda.lib
 c/coli_cuda.exp
