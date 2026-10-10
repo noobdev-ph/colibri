@@ -15,7 +15,32 @@ c/colibri.exe
 c/glm
 c/glm.exe
 c/olmoe
+c/inkling
+c/kimi_k3
+c/kimi_k3.exe
 c/olmoe.exe
+c/qwen38
+c/qwen38.exe
+c/laya
+c/laya.exe
+c/gliner_decide
+c/gliner_decide.exe
+c/tools/jev-sdk/node_modules/
+# deepseek_v4 and the per-unit objects its amalgamated Makefile leaves behind.
+# The same omission as #858, one file over: every engine is listed here except
+# the one added last, so `make deepseek-v4` left 26 untracked .o files in
+# `git status`.
+c/deepseek_v4
+c/deepseek_v4.exe
+c/deepseek_v41
+c/deepseek_v41.exe
+c/COLI_V4_UNIT_*.o
+c/deepseek_v4.cflags
+c/deepseek_v4.cudaflags
+# ...and the ownership-test objects, which the same Makefile puts in a build/
+# subdirectory (V4_OWN_DIR) rather than next to the sources. #868 caught the
+# twelve in c/, not the four in here, so `make check` still left `?? c/build/`.
+c/build/
 c/iobench
 c/iobench.exe
 c/tok_test
@@ -25,18 +50,61 @@ c/backend_loader.o
 c/coli_cuda.dll
 c/coli_cuda.lib
 c/coli_cuda.exp
+c/coli_hip.dll
+c/coli_hip.lib
+c/coli_hip.exp
+c/coli_hip.pdb
+# DeepSeek V4 CUDA tier build artifacts (coli_cuda_dsv4.dll is the MSVC/nvcc
+# backend loaded at runtime by the MinGW-built deepseek-v4.exe)
+c/coli_cuda_dsv4.dll
+c/coli_cuda_dsv4.lib
+c/coli_cuda_dsv4.exp
+c/backend_cuda_dsv4*.o
+c/COLI_V4_UNIT_*.o
+c/dsv4_*_test*
+c/dsv4_loader_test*
+c/dsv4_decode_loader_test*
+c/t.o
+c/t.c
+c/compile_err.txt
 c/tests/test_*
 !c/tests/test_*.c
 !c/tests/test_*.cu
 !c/tests/test_*.mm
 !c/tests/test_*.py
+# scratch fixture directories the test binaries write at run time
+c/tests/tmp_*
+# bench_* and fuzz_* build to extensionless binaries in the same directory and
+# were not covered here, which is how c/tests/bench_omp_grain reached the tree.
+c/tests/bench_*
+!c/tests/bench_*.c
+!c/tests/bench_*.cu
+!c/tests/bench_*.mm
+!c/tests/bench_*.py
+c/tests/fuzz_*
+!c/tests/fuzz_*.c
+!c/tests/fuzz_*.cu
+!c/tests/fuzz_*.mm
+!c/tests/fuzz_*.py
 result
+c/tests/test_cap_precedence
+c/tests/test_cap_precedence.exe
 
 # oracoli tiny generati (make_glm_oracle.py) e dati benchmark scaricati
 c/glm_tiny/
 c/glm_tiny_i2/
 c/glm_tiny_i4/
 c/glm_tiny_mix/
+c/glm_tiny_fmt6/
+c/glm_tiny_fmt4/
+# tests/vulkan_engines.sh glm: the FP8 oracle and its int4/int3 conversions, GLM-5.3's tiny pair
+c/glm_fp8/
+c/glm_tiny_i4r/
+c/glm_tiny_i3/
+c/glm_tiny_d3/
+c/glm53_tiny/
+c/glm53_stream-i4/
+c/glm53_stream-deq/
 c/glm_bench_medium/
 c/bench/
 
@@ -68,3 +136,60 @@ olmoe_merged/
 olmoe_i4/
 c/olmoe_merged/
 c/olmoe_i4/
+.idea
+c/tiny_inkling/
+c/qwen38_tiny/
+c/dsv41_tiny/
+c/qwen36_tiny/
+c/qwen36_tiny_c/
+# tests/spec_drafts_harness.py: the ASCII-vocabulary fixture whose replies round-trip as text
+c/qwen36_tiny_v128/
+c/qwen36_tiny_v128_c/
+c/qwen36_tiny64_v128/
+c/qwen36_tiny64_v128_c/
+# tools/make_clef_tiny.py and its container; clef_tiny/ref.json is committed
+c/clef_tiny/*
+!c/clef_tiny/ref.json
+c/clef_tiny_c/
+c/qwen38_2p4t_tiny/
+c/qwen38_2p4t_tiny_c/
+
+# Claude Code working directory (agent worktrees, session scratch) — never a repo artifact
+.claude/
+
+# DeepGEMM sm120 checkout made by c/tools/fetch_deepgemm.sh (pinned commit,
+# not vendored): the DeepSeek V4 DeepGEMM flavour's headers.
+c/third_party/deepgemm/
+
+# DLL flavours + MSVC import/export artifacts of the V4 CUDA tier (regenerated
+# by cuda-dsv4-dll / cuda-dsv4-dg-dll); the loader picks the DLL at runtime.
+c/coli_cuda_dsv4*.dll
+c/coli_cuda_dsv4*.lib
+c/coli_cuda_dsv4*.exp
+c/*.obj
+# macOS
+.DS_Store
+**/.DS_Store
+
+# compiled objects
+*.o
+
+# vendor modeling cache for the tiny K3 oracle (maintainer tool)
+c/kimi_k3_tiny/.vendor_kimi_k3/
+c/kimi_k3_tiny/.coli_usage
+c/qwen38_vision_tiny/
+c/qwen38_mm_tiny/
+c/qwen38_tiny_fp8/
+c/qwen38_tiny_int4/
+c/qwen38_tiny_mtp/
+c/qwen38_tiny_fp8_mtp/
+c/qwen38_tiny_int4_mtp/
+# MiMo tiny fixture: config.json and ref.json are committed, the rest is regenerated
+c/mimo_tiny/*.safetensors
+c/mimo_tiny/model.safetensors.index.json
+c/mimo_tiny/.vendor_mimo_v2/
+c/mimo_tiny/image.png
+c/mimo_tiny/image.json
+c/mimo_tiny/patches.f32
+c/mimo
+c/mimo.exe

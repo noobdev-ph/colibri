@@ -3,13 +3,17 @@ import { createElement } from "react"
 import en from "./en"
 import zhCN from "./zh-CN"
 import zhTW from "./zh-TW"
+import de from "./de"
 import it from "./it"
+import id from "./id"
 
 const LOCALES = [
   { code: "en", label: "English" },
   { code: "zh-CN", label: "简体中文" },
   { code: "zh-TW", label: "繁體中文" },
   { code: "it", label: "Italiano" },
+  { code: "de", label: "Deutsch" },
+  { code: "id", label: "Bahasa Indonesia" },
 ] as const
 
 const DICTS: Record<string, Record<string, string>> = {
@@ -17,6 +21,8 @@ const DICTS: Record<string, Record<string, string>> = {
   "zh-CN": zhCN,
   "zh-TW": zhTW,
   "it": it,
+  "de": de,
+  "id": id,
 }
 
 const STORAGE_KEY = "colibri-locale"

@@ -23,10 +23,129 @@ USO:
   # selftest del dequant fp8 (richiede torch)
   python3 tools/convert_fp8_to_int4.py --selftest
   # reale: scarica+converte+cancella shard per shard
-  python3 tools/convert_fp8_to_int4.py --repo zai-org/GLM-5.2-FP8 --outdir /home/vincenzo/glm52_i4
+  python3 tools/convert_fp8_to_int4.py --repo zai-org/GLM-5.2-FP8 --outdir /path/to/glm52_i4
 """
-import os, sys, glob, json, shutil, argparse
+import os, sys, glob, json, shutil, argparse, threading
 import numpy as np
+
+
+_positioned_write_lock = threading.Lock()
+
+
+# ---------- guardia di famiglia (#1304) ----------
+# Questo convertitore serve UNA famiglia: GLM-5.2. Ma `coli convert` accetta
+# qualunque --repo, e in una settimana due utenti gli hanno dato Qwen3.8:
+# i tensori BF16 che non riconosce come esperti GLM passano upcastati a f32,
+# ogni shard raddoppia, e #1304 si e' fermato a 424 GB scritti su 360 di
+# sorgente. Il controllo del model_type costa 5 KB di config.json e va fatto
+# PRIMA del primo shard, non dopo il disco pieno.
+#
+# I due insiemi qui sotto sono copie di family_registry.py, e una copia che
+# diverge e' esattamente il difetto che questa guardia cura: il test
+# tests/test_convert_guard.py li confronta col registry e fallisce alla prima
+# famiglia aggiunta o rinominata.
+GLM52_MODEL_TYPES = {"glm_moe_dsa", "glm5_moe", "glm"}
+OTHER_FAMILY_PATHS = {
+    "glm5_next":       "GLM-5.3-Flash: use tools/convert_glm53.py",
+    "glm5_next_text":  "GLM-5.3-Flash: use tools/convert_glm53.py",
+    "qwen4_exp":       "Qwen3.8-Flash-Next is NOT converted by this tool: download the "
+                       "official FP8 checkpoint (Qwen/Qwen3.8-Flash-Next-FP8) and run it "
+                       "directly, optionally adding int4-g64 experts with "
+                       "tools/convert_qwen38_experts_int4.py; see docs/qwen38.md",
+    "qwen4_exp_text":  "Qwen3.8-Flash-Next is NOT converted by this tool: download the "
+                       "official FP8 checkpoint (Qwen/Qwen3.8-Flash-Next-FP8) and run it "
+                       "directly, optionally adding int4-g64 experts with "
+                       "tools/convert_qwen38_experts_int4.py; see docs/qwen38.md",
+    "qwen3_5_moe":     "Qwen3.6: use tools/convert_qwen36.py",
+    "qwen3_5_moe_text":"Qwen3.6: use tools/convert_qwen36.py",
+    "qwen3_5":         "Qwen3.8-27B (dense): use tools/convert_qwen36.py, see docs/qwen36.md",
+    "qwen3_5_text":    "Qwen3.8-27B (dense): use tools/convert_qwen36.py, see docs/qwen36.md",
+    "qwen3_moe":       "Qwen3-Coder-30B-A3B: use tools/convert_qwen36.py, see docs/qwen36.md",
+    "inkling_mm_model":"Inkling: use tools/convert_inkling_int4.py",
+    "inkling":         "Inkling: use tools/convert_inkling_int4.py",
+    "olmoe":           "OLMoE: use tools/convert_olmoe.py",
+    "kimi_k3":         "Kimi K3: see docs/kimi_k3.md for its container pipeline",
+    "kimi_linear":     "Kimi K3: see docs/kimi_k3.md for its container pipeline",
+    "deepseek_v4":     "DeepSeek V4: see docs/deepseek-v4.md, section Download",
+    "deepseek_v41":    "DeepSeek V4.1: no conversion needed -- its experts already ship fp4 and its dense fp8; run tools/prepare_dsv41.py once, see docs/deepseek-v41.md",
+    "deepseek_v41_text": "DeepSeek V4.1: no conversion needed -- see docs/deepseek-v41.md",
+    "mimo_v2":         "MiMo-V2.6 is NOT converted: its experts already ship MXFP4 and its "
+                       "dense FP8/BF16, and the engine reads the release as downloaded; "
+                       "see docs/mimo.md",
+    "qwenimage21pipeline": "Qwen-Image-2.1 is NOT converted: the image engine reads the "
+                           "diffusers checkpoint as downloaded; see docs/qwen-image.md",
+    "laya_modernbert": "Laya is NOT converted: the decision engine reads the release "
+                       "as downloaded; see docs/laya.md",
+    "gliner2_span_deberta-v2": "GLiNER2.5-Decide is NOT converted: the decision engine reads "
+                               "the release as downloaded; see docs/gliner_decide.md",
+}
+# A config.json whose model_type is not the registry's key for its family: a
+# GLiNER2 checkpoint says "extractor" for every architecture and encoder, and
+# the registry names it by both (family_registry._resolve_gliner2_checkpoint).
+CONFIG_MODEL_TYPE_ALIASES = {"extractor": "gliner2_span_deberta-v2"}
+
+
+def check_model_family(config, where):
+    """Ferma il convertitore su un checkpoint che non e' GLM-5.2.
+
+    `config` e' il config.json del checkpoint gia' parsato; `where` dice al
+    messaggio da dove viene (un path o un repo id). Ritorna in silenzio per
+    GLM-5.2; esce con indicazione per-famiglia per tutto il resto.
+    """
+    model_type = config.get("model_type")
+    if not isinstance(model_type, str) or not model_type:
+        raise SystemExit(f"ERROR: {where}: config.json has no usable model_type; "
+                         "refusing to guess. This converter is for GLM-5.2 only.")
+    if model_type in GLM52_MODEL_TYPES:
+        return
+    hint = OTHER_FAMILY_PATHS.get(CONFIG_MODEL_TYPE_ALIASES.get(model_type, model_type))
+    if hint:
+        raise SystemExit(f"ERROR: {where} is '{model_type}', not GLM-5.2.\n"
+                         f"  This converter would silently upcast most of its "
+                         f"tensors and roughly double the size (#1304).\n  {hint}")
+    raise SystemExit(f"ERROR: {where} is '{model_type}', which this converter does "
+                     f"not know. It converts GLM-5.2 only; other families have "
+                     f"their own tools under c/tools/, and Qwen3.8 needs none.")
+
+
+
+def _save_file_atomic(save_file, tensors, destination, **kwargs):
+    destination = os.fspath(destination)
+    temporary = destination + ".tmp"
+    try:
+        os.remove(temporary)
+    except FileNotFoundError:
+        pass
+    try:
+        save_file(tensors, temporary, **kwargs)
+        os.replace(temporary, destination)
+    finally:
+        try:
+            os.remove(temporary)
+        except OSError:
+            pass
+
+
+def _positioned_write(fd, data, offset):
+    remaining = memoryview(data)
+    pwrite = getattr(os, "pwrite", None)
+    if pwrite is not None:
+        while remaining:
+            written = pwrite(fd, remaining, offset)
+            if written == 0:
+                raise OSError("pwrite returned zero bytes")
+            remaining = remaining[written:]
+            offset += written
+        return
+
+    with _positioned_write_lock:
+        os.lseek(fd, offset, os.SEEK_SET)
+        while remaining:
+            written = os.write(fd, remaining)
+            if written == 0:
+                raise OSError("write returned zero bytes")
+            remaining = remaining[written:]
+
 
 # ---------- quantizzazione: identica al C (glm.c) ----------
 def quant_int8(w, bits):                       # w: [O,I] f32 -> (qbytes U8 [O*I], scale f32 [O])
@@ -261,9 +380,36 @@ def dequant(f, name, keys):
 # record dict(PROJ_BITS) — this global is the definition those sites depend on.
 PROJ_BITS = {}
 
+# Rows per quantization block. Every non-E8 format here carries per-row scales (or
+# per-group scales along I), so rows never interact and blocking is BIT-IDENTICAL to
+# quantizing the whole tensor — it only caps the peak of the quantizer's full-size
+# temporaries. That matters on small hosts: embed/lm_head at [154880, 6144] is 3.8 GB
+# as f32, and abs/divide/rint/clip each materialise another copy (~15 GB peak) on a
+# box with 13 GB free. E8 is excluded — it is already blocked inside iq3_pack.encode,
+# and its ".qs" companion is a single format tag, not a per-row scale.
+QUANT_ROWS = int(os.environ.get("COLI_QUANT_ROWS", "8192"))
+
+def _rowwise(fn, w, *args):
+    O = w.shape[0]
+    if O <= QUANT_ROWS:
+        return fn(w, *args)
+    qs, ss = [], []
+    for r0 in range(0, O, QUANT_ROWS):
+        q, s = fn(w[r0:r0 + QUANT_ROWS], *args)
+        qs.append(q); ss.append(s)
+    return np.concatenate(qs), np.concatenate(ss)
+
+E8_JOBS = 1                                     # --jobs: parallel e8 encodes per shard
+
+def _e8_job(item):
+    name, w = item
+    q, s = quant_e8(w)
+    return name, q, s
+
 def convert_shard(path, out_dict, n_layers, ebits, io_bits, xbits,
                   keep_mtp=False, keep_idx=False, group_size=0, bits_map=None):
     from safetensors import safe_open
+    e8_jobs = []                                # deferred: encoded in a pool after the scan
     with safe_open(path, framework="pt") as f:
         keys = set(f.keys())
         for name in f.keys():
@@ -290,19 +436,54 @@ def convert_shard(path, out_dict, n_layers, ebits, io_bits, xbits,
                     out_dict[name] = w.astype(np.float32); continue
                 if bits == E8:
                     # fmt=6 E8/IQ3 — routed-expert projections only, enforced in main().
-                    q, s = quant_e8(w)
+                    # Already row-blocked inside iq3_pack.encode. The python codec is
+                    # slow (~5.5s per expert matrix), so encodes are deferred and run
+                    # across a process pool after the shard scan (--jobs).
+                    e8_jobs.append((name, w))
+                    continue
                 elif bits == 3:
                     # int3-g64 (fmt=5): inherently group-64, distinct from grouped-int4.
-                    q, s = quant_int3_g64(w)
+                    q, s = _rowwise(quant_int3_g64, w)
                 elif group_size > 0 and bits <= 4:
-                    q, s = quant_int4_grouped(w, bits, group_size)
+                    q, s = _rowwise(quant_int4_grouped, w, bits, group_size)
                 else:
-                    q, s = (quant_int2(w, bits) if bits <= 2 else
-                            quant_int4(w, bits) if bits <= 4 else quant_int8(w, bits))
+                    q, s = _rowwise(quant_int2 if bits <= 2 else
+                                    quant_int4 if bits <= 4 else quant_int8, w, bits)
                 out_dict[name] = q
                 out_dict[name + ".qs"] = s
+    if e8_jobs:
+        if E8_JOBS > 1:
+            from multiprocessing import get_context
+            with get_context("spawn").Pool(E8_JOBS) as pool:   # spawn: safe after BLAS threads
+                for name, q, s in pool.imap(_e8_job, e8_jobs, chunksize=1):
+                    out_dict[name] = q; out_dict[name + ".qs"] = s
+        else:
+            for item in e8_jobs:
+                name, q, s = _e8_job(item)
+                out_dict[name] = q; out_dict[name + ".qs"] = s
 
 def free_gb(p): return shutil.disk_usage(p).free / 1e9
+
+def _shard_already_done(done, key, outdir):
+    # Mirror of the --indir resume check: None = never seen, "" = seen/empty, name = emitted.
+    prev = done.get(key)
+    return prev is not None and (prev == "" or os.path.exists(os.path.join(outdir, prev)))
+
+def _init_worker(proj_bits):
+    # Restore per-projection expert-bit overrides in each worker: the "spawn" start method
+    # (macOS default) re-imports this module fresh, losing the PROJ_BITS main() populated.
+    global PROJ_BITS
+    PROJ_BITS = proj_bits
+
+def _convert_one(args):
+    # Convert one shard in a worker; the main process writes the result, so shard numbering
+    # and the atomic manifest stay serial and identical to --workers 1.
+    i, sp, n_layers, ebits, io_bits, xbits, keep_mtp, keep_idx, group_size, bits_map = args
+    out = {}
+    convert_shard(sp, out, n_layers, ebits, io_bits, xbits,
+                  keep_mtp=keep_mtp, keep_idx=keep_idx,
+                  group_size=group_size, bits_map=bits_map)
+    return i, out
 
 def check_or_record_params(outdir, prefix, params):
     """#383-class guard, mirrored onto the --repo download loops from the --indir
@@ -333,6 +514,15 @@ def check_or_record_params(outdir, prefix, params):
 def _bits(v):                                   # "e8" -> fmt=6 marker; anything else an int width
     return E8 if v == E8 else int(v)
 
+def source_label(a):
+    if a.selftest or a.selftest_nvfp4:
+        return "selftest"
+    if a.indir:
+        return "local " + a.indir
+    if a.repo:
+        return "download " + a.repo
+    raise SystemExit("one of --indir or --repo is required")
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default=None)
@@ -353,8 +543,16 @@ def main():
         help="bits for other attention projections (q_a, q_b, kv_a). Default=ebits")
     ap.add_argument("--dmlp-bits", type=int, default=None,
         help="bits for dense MLP (first 3 layers). Default=ebits")
-    ap.add_argument("--group-size", type=int, default=0,  # 0 = per-row (backward compat); 128 = group-scaled
-        help="group size for int4 scales: 0=per-row (default), 128=one scale per 128 elements (much better quality)")
+    ap.add_argument("--group-size", type=int, default=64,
+        # gs64 is the community-validated default (#225 root cause, #455 5/5-clean
+        # verification, ablation #453: per-row int4 costs -9.3pp mean acc_norm vs
+        # -2.2..-3.4pp for group-scaled). Per-row remains available as an explicit
+        # opt-out; the resume manifest (check_or_record_params) refuses to mix the
+        # two in one outdir, so a resumed pre-default conversion aborts loudly
+        # instead of interleaving formats (#355-class).
+        help="group size for int4 scales: 64=one scale per 64 elements (default, "
+             "much better quality), 0=per-row (legacy; costs ~9pp on quality "
+             "benchmarks and is the #455 non-termination trigger)")
     # Per-projection bit overrides for routed experts (orthogonal to the type-level flags above).
     ap.add_argument("--up-bits", type=_bits, default=None,
         help="bits for up_proj in routed experts (e.g. 3 = int3-g64). Default=xbits")
@@ -364,6 +562,17 @@ def main():
         help="bits for down_proj in routed experts. Default=xbits")
     ap.add_argument("--n-layers", type=int, default=78)
     ap.add_argument("--min-free-gb", type=float, default=20.0)
+    ap.add_argument("--workers", type=int, default=1,
+                    help="Parallel worker processes for the local --indir conversion "
+                         "(default 1 = serial, unchanged). >1 converts already-local shards "
+                         "concurrently; the main process still writes and checkpoints in "
+                         "shard order, so output and out-NNNNN numbering are identical. "
+                         "No effect on the --repo disk-safe path.")
+    ap.add_argument("--jobs", type=int, default=1,
+        help="parallel worker processes for the e8 encode WITHIN a shard (the python codec "
+             "is ~5.5s per expert matrix single-threaded; other quant modes are fast and "
+             "stay serial). Works on both --indir and the --repo disk-safe path. "
+             "Untested in combination with --workers>1; use one or the other.")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--selftest-nvfp4", action="store_true",
         help="unit-test del dequant NVFP4 (LUT e2m1 + round-trip), nessun download / no network")
@@ -375,6 +584,8 @@ def main():
              "repository (~756 GB of traffic) to retain only a few GB. Resumable per shard. "
              "Recommended: --ebits 8.")
     a = ap.parse_args()
+    global E8_JOBS
+    E8_JOBS = max(1, a.jobs)
     if a.ebits is None:
         # testa MTP a int4 = acceptance ~0-4% (misurato, issue #8): il draft sbaglia sempre
         # e la speculazione non parte mai. A int8: 39-59%, 2.2-2.8 token/forward.
@@ -389,7 +600,7 @@ def main():
         # EN: this way is repairable in place with tools/repair_mtp_int8.py.
         print(f"WARNING: --mtp with --ebits {a.ebits} and per-row scales ZEROES eh_proj's "
               "embedding half -> MTP acceptance ~0% (issue #8). Use the default --ebits 8, "
-              "or add --group-size 128 for group-scaled int4.")
+              "or drop --group-size 0 to get the group-scaled default.")
     if a.xbits is None: a.xbits = a.ebits
     for proj, val in (("gate_proj", a.gate_bits), ("up_proj", a.up_bits), ("down_proj", a.down_bits)):
         if val is not None: PROJ_BITS[proj] = val
@@ -421,7 +632,7 @@ def main():
     mode = "MTP head only" if a.mtp else "DSA indexer only" if a.indexer else "main model"
     grp = f"grouped gs={a.group_size} (fmt=4)" if (a.group_size and a.ebits <= 4) else \
           (f"PER-ROW (grouped branch needs bits<=4; ebits={a.ebits} disables it)" if a.group_size else "per-row")
-    print(f"[PLAN] mode: {mode} | source: {'local ' + a.indir if a.indir else 'download ' + a.repo} | "
+    print(f"[PLAN] mode: {mode} | source: {source_label(a)} | "
           f"experts {a.ebits}-bit, embed/lm_head {a.io_bits}-bit, x {a.xbits}-bit | {grp}")
 
     if a.selftest_nvfp4:
@@ -502,6 +713,11 @@ def main():
 
     os.makedirs(a.outdir, exist_ok=True)
     if a.indir:    # conversione locale (test)
+        cfg_path = os.path.join(a.indir, "config.json")
+        if os.path.exists(cfg_path):
+            with open(cfg_path) as fh:
+                check_model_family(json.load(fh), a.indir)
+        # niente config.json: fixture sintetiche (glm_tiny) -- si procede come sempre
         shards = sorted(glob.glob(os.path.join(a.indir, "*.safetensors")))
         from safetensors.numpy import save_file
         # #383: se l'indice c'e', i passaggi --mtp/--indexer convertono SOLO gli shard
@@ -559,6 +775,20 @@ def main():
                 return
         done = prog.setdefault("shards", {}); prog["params"] = params
         n = 0; fresh = 0; skipped = 0
+        import time as _t
+        t_start = _t.time()
+        # --workers > 1: shards are already local, so convert them concurrently. Writing and
+        # the manifest stay in THIS process, walked in shard order, so output bytes and the
+        # out-NNNNN numbering match the serial path exactly. workers == 1 = original path.
+        _pool = _result_it = None
+        if a.workers and a.workers > 1:
+            from multiprocessing import Pool
+            _pending = [(i, sp, a.n_layers, a.ebits, a.io_bits, a.xbits,
+                         a.mtp, a.indexer, a.group_size, bits_map)
+                        for i, sp in enumerate(shards)
+                        if not _shard_already_done(done, os.path.basename(sp), a.outdir)]
+            _pool = Pool(a.workers, initializer=_init_worker, initargs=(dict(PROJ_BITS),))
+            _result_it = iter(_pool.imap(_convert_one, _pending))
         for i, sp in enumerate(shards):
             key = os.path.basename(sp)
             prev = done.get(key)                          # None = mai visto; "" = visto, vuoto; nome = emesso
@@ -566,19 +796,32 @@ def main():
                 if prev: n += 1
                 skipped += 1
                 continue
-            out = {}
-            convert_shard(sp, out, a.n_layers, a.ebits, a.io_bits, a.xbits,
-                          keep_mtp=a.mtp, keep_idx=a.indexer,
-                          group_size=a.group_size, bits_map=bits_map)
+            # Progress + ETA: the local pass can run for days on a big model (E8 on
+            # GLM-5.2 is ~50 h split across workers), and without this the loop is
+            # silent until it finishes. flush because stdout is a redirected file.
+            eta = ""
+            if fresh:
+                per = (_t.time() - t_start) / fresh
+                eta = f", ETA {per * (len(shards) - i) / 3600:.1f} h"
+            print(f"[{i + 1}/{len(shards)}] {key} ({free_gb(a.outdir):.0f} GB free{eta})", flush=True)
+            if _result_it is not None:
+                _ri, out = next(_result_it)               # parallel: converted by a worker, in shard order
+            else:
+                out = {}
+                convert_shard(sp, out, a.n_layers, a.ebits, a.io_bits, a.xbits,
+                              keep_mtp=a.mtp, keep_idx=a.indexer,
+                              group_size=a.group_size, bits_map=bits_map)
             if not out:                                   # shard senza MTP/idx: niente file (come il download path)
                 done[key] = ""
             else:
                 name = f"{prefix}{n:05d}.safetensors"
-                save_file(out, os.path.join(a.outdir, name))
+                _save_file_atomic(save_file, out, os.path.join(a.outdir, name))
                 done[key] = name; n += 1; fresh += 1
             tmp_prog = prog_path + ".tmp"                 # scrittura atomica: una ripresa non vede mai un manifest mezzo scritto
             with open(tmp_prog, "w") as f: json.dump(prog, f, indent=1)   # EN: atomic write: a resume never sees a half-written manifest
             os.replace(tmp_prog, prog_path)
+        if _pool is not None:
+            _pool.close(); _pool.join()
         if skipped: print(f"[RESUME] {skipped} shard(s) already done in {a.outdir}, skipped")
         # metadati per la conversione principale: gli stessi quattro file del download
         # path — senza tokenizer.json chat/serve non partono. I passaggi mtp/idx vanno
@@ -623,6 +866,19 @@ def main():
     # EN: force the classic HTTP path, which curl proved works (measured 2026-07-02).
     os.environ.setdefault("HF_HUB_DISABLE_XET", "1")   # =0 per riabilitare xet / to re-enable xet
     from huggingface_hub import HfApi, hf_hub_download
+
+    # La guardia va qui: config.json pesa 5 KB e decide se i prossimi 300 GB
+    # hanno senso. Se il repo non ha config.json si procede con un avviso, per
+    # non rompere mirror atipici: il fallimento utile e' sul model_type
+    # sbagliato, non sulla rete.
+    try:
+        with open(hf_hub_download(a.repo, "config.json")) as fh:
+            check_model_family(json.load(fh), a.repo)
+    except SystemExit:
+        raise
+    except Exception as problem:
+        print(f"WARNING: could not read {a.repo}/config.json ({problem}); "
+              "proceeding without the family check.")
 
     # lock anti-doppione: DUE convertitori sulla stessa outdir si corrompono a vicenda.
     # EN: anti-duplicate lock: TWO converters on the same outdir corrupt each other.
@@ -686,7 +942,8 @@ def main():
             except Exception: pass
         if not os.path.exists(part):
             with open(part, "wb") as f: f.truncate(expected)   # file sparse / sparse file
-        fd = os.open(part, os.O_WRONLY)
+        flags = os.O_WRONLY | getattr(os, "O_BINARY", 0)
+        fd = os.open(part, flags)
         t0 = _t.time(); nres = [0]; log_lock = threading.Lock(); stopfail = []
         def worker(t):
             s0, s1 = segs[t]
@@ -704,7 +961,7 @@ def main():
                             if not chunk: break
                             rem = (s1 - s0) - done[t]     # mai oltre il segmento / never past the segment
                             if len(chunk) > rem: chunk = chunk[:rem]
-                            os.pwrite(fd, chunk, s0 + done[t])
+                            _positioned_write(fd, chunk, s0 + done[t])
                             done[t] += len(chunk)
                 except KeyboardInterrupt: raise
                 except Exception as ex:
@@ -841,7 +1098,7 @@ def main():
             print(f"[MTP {i+1}/{len(mtp_shards)}] downloading {sh}...", flush=True)
             p = download_retry(a.repo, sh, tmp)
             out = {}; convert_shard(p, out, a.n_layers, a.ebits, a.io_bits, a.xbits, keep_mtp=True, group_size=a.group_size, bits_map=bits_map)
-            save_file(out, outp)
+            _save_file_atomic(save_file, out, outp)
             os.remove(p)
             for blob in glob.glob(os.path.join(tmp, "**", "*"), recursive=True):
                 if os.path.isfile(blob): os.remove(blob)
@@ -865,7 +1122,7 @@ def main():
             print(f"[IDX {i+1}/{len(idx_shards)}] downloading {sh}...", flush=True)
             p = download_retry(a.repo, sh, tmp)
             out = {}; convert_shard(p, out, a.n_layers, a.ebits, a.io_bits, a.xbits, keep_idx=True, group_size=a.group_size, bits_map=bits_map)
-            if out: save_file(out, outp)
+            if out: _save_file_atomic(save_file, out, outp)
             os.remove(p)
             for blob in glob.glob(os.path.join(tmp, "**", "*"), recursive=True):
                 if os.path.isfile(blob): os.remove(blob)
@@ -883,7 +1140,7 @@ def main():
         print(f"[{i+1}/{len(shards)}] downloading {sh} ({free_gb(a.outdir):.0f} GB free)...", flush=True)
         p = download_retry(a.repo, sh, tmp)
         out = {}; convert_shard(p, out, a.n_layers, a.ebits, a.io_bits, a.xbits, group_size=a.group_size, bits_map=bits_map)
-        save_file(out, outp)
+        _save_file_atomic(save_file, out, outp)
         os.remove(p)                                       # <-- cancella subito lo shard fp8
         for blob in glob.glob(os.path.join(tmp, "**", "*"), recursive=True):
             if os.path.isfile(blob): os.remove(blob)
